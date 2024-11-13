@@ -1,133 +1,140 @@
-import React, { useRef, useState, useEffect, useContext } from 'react';
-import { WebSocketContext } from '../../contexts/WebSocketContext';
+// src/components/VideoCall.js
+import React, { useEffect, useRef, useState, useContext } from 'react';
 import './VideoCall.css';
-import '@fortawesome/fontawesome-free/css/all.min.css';
+import { WebSocketContext } from '../context/WebSocketContext';
 
-function VideoCall({ userName }) {
-  const socket = useContext(WebSocketContext);
-  const localVideoRef = useRef(null);
-  const localStreamRef = useRef(null);
-  const [clientId, setClientId] = useState(null);
+function VideoCall() {
+  const wsRef = useContext(WebSocketContext); // Получаем WebSocket из контекста
+  const [localStream, setLocalStream] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
-  const peerConnections = useRef({});
+  const [username, setUsername] = useState('');
+  const [connected, setConnected] = useState(false);
+
+  const pcRef = useRef({});
+  const localVideoRef = useRef(null);
+
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
-  const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
-  const [remoteUserNames, setRemoteUserNames] = useState({});
 
-  const handleMediaStatus = (sender, audioEnabled, videoEnabled) => {
-    setRemoteMediaStatus((prevStatus) => ({
-      ...prevStatus,
-      [sender]: {
-        audioEnabled: audioEnabled !== undefined ? audioEnabled : prevStatus[sender]?.audioEnabled,
-        videoEnabled: videoEnabled !== undefined ? videoEnabled : prevStatus[sender]?.videoEnabled,
-      },
-    }));
-  };
+  // Получаем параметры из URL (meetingId и username)
+  const queryParams = new URLSearchParams(window.location.search);
+  const meetingId = queryParams.get('meetingId');
+  const userNameParam = queryParams.get('username');
 
+  // Инициализация WebSocket и локального видео
   useEffect(() => {
-    // Получение локального медиапотока
+    const userNamePrompt = userNameParam || prompt('Введите ваше имя:');
+    setUsername(userNamePrompt);
+
+    // Устанавливаем локальный видео-поток
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
-        localStreamRef.current = stream;
+        setLocalStream(stream);
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-
-        // Отправляем сообщение о присоединении
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'join' }));
-        } else if (socket) {
-          socket.addEventListener('open', () => {
-            socket.send(JSON.stringify({ type: 'join' }));
-          });
-        }
       })
       .catch((error) => {
-        console.error('Ошибка получения медиа:', error);
-        alert('Необходимо предоставить доступ к камере и микрофону для участия в видеовстрече.');
+        console.error('Ошибка доступа к камере и микрофону:', error);
+        alert('Необходимо предоставить доступ к камере и микрофону.');
       });
 
-    return () => {
-      // Очистка при размонтировании
-      if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
-      }
-      Object.values(peerConnections.current).forEach((pc) => pc.close());
-      peerConnections.current = {};
-      setRemoteStreams({});
-      setRemoteMediaStatus({});
-    };
-  }, [socket]);
+    if (wsRef.current) {
+      wsRef.current.onmessage = (message) => {
+        const data = JSON.parse(message.data);
+        handleMessage(data);
+      };
 
-  useEffect(() => {
-    if (!socket) return;
+      wsRef.current.onopen = () => {
+        console.log('WebSocket подключен');
+        setConnected(true);
+        wsRef.current.send(
+          JSON.stringify({ type: 'set-name', name: userNamePrompt })
+        );
+      };
 
-    const handleSocketMessage = async (event) => {
-      const data = JSON.parse(event.data);
-      console.log('Получено сообщение:', data);
-
-      const { type, sender, sessionId } = data;
-
-      switch (type) {
-        case 'your-id':
-          setClientId(sessionId);
-          if (socket && socket.readyState === WebSocket.OPEN) {
-            socket.send(
-              JSON.stringify({
-                type: 'set-name',
-                name: userName,
-                sessionId: sessionId,
-              })
-            );
-          }
-          break;
-
-        case 'new-user':
-          await handleNewUser(data.sessionId, data.userName);
-          break;
-        case 'offer':
-          await handleOffer(data.offer, sender);
-          break;
-        case 'answer':
-          await handleAnswer(data.answer, sender);
-          break;
-        case 'candidate':
-          await handleCandidate(data.candidate, sender);
-          break;
-        case 'user-left':
-          handleUserLeft(sessionId);
-          break;
-        case 'media-status':
-          handleMediaStatus(sender, data.audioEnabled, data.videoEnabled);
-          break;
-        default:
-          break;
-      }
-    };
-
-    socket.addEventListener('message', handleSocketMessage);
+      wsRef.current.onclose = () => {
+        console.log('WebSocket отключен');
+        setConnected(false);
+      };
+    }
 
     return () => {
-      socket.removeEventListener('message', handleSocketMessage);
+      // Очищаем ресурсы при размонтировании
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+      if (localStream) {
+        localStream.getTracks().forEach((track) => track.stop());
+      }
     };
-  }, [socket]);
+  }, [localStream, userNameParam, wsRef]);
 
-  const createPeerConnection = (sessionId) => {
+  // Обработка входящих сообщений WebSocket
+  const handleMessage = async (data) => {
+    const { type } = data;
+
+    switch (type) {
+      case 'your-id':
+        // Сообщаем своё имя на сервер
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'set-name',
+            name: username,
+          })
+        );
+        break;
+      case 'new-user':
+        await handleNewUser(data.sessionId, data.userName);
+        break;
+      case 'offer':
+        await handleOffer(data);
+        break;
+      case 'answer':
+        await handleAnswer(data);
+        break;
+      case 'candidate':
+        await handleCandidate(data);
+        break;
+      case 'user-left':
+        handleUserLeft(data.sessionId);
+        break;
+      default:
+        break;
+    }
+  };
+
+  // Логика обработки нового пользователя
+  const handleNewUser = async (sessionId, userName) => {
+    const pc = createPeerConnection(sessionId, userName);
+
+    // Создаем предложение (offer)
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Отправляем предложение на сервер
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'offer',
+        offer: pc.localDescription,
+        receiver: sessionId,
+      })
+    );
+  };
+
+  // Создание RTCPeerConnection и обработка кандидатов
+  const createPeerConnection = (sessionId, userName) => {
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }, // Публичный STUN сервер Google
-      ],
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && clientId) {
-        socket.send(
+      if (event.candidate) {
+        wsRef.current.send(
           JSON.stringify({
             type: 'candidate',
             candidate: event.candidate,
-            sender: clientId,
             receiver: sessionId,
           })
         );
@@ -137,178 +144,121 @@ function VideoCall({ userName }) {
     pc.ontrack = (event) => {
       setRemoteStreams((prevStreams) => ({
         ...prevStreams,
-        [sessionId]: event.streams[0],
+        [sessionId]: { stream: event.streams[0], userName },
       }));
     };
 
-    // Добавляем локальные треки в соединение
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
+    // Добавляем локальный стрим в PeerConnection
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        pc.addTrack(track, localStream);
       });
     }
 
+    pcRef.current[sessionId] = pc;
     return pc;
   };
 
-  const handleNewUser = async (sessionId, userName) => {
-    // Сохраняем имя пользователя
-    setRemoteUserNames((prevNames) => ({
-      ...prevNames,
-      [sessionId]: userName,
-    }));
-
-    // Создаём соединение
-    const pc = createPeerConnection(sessionId);
-    peerConnections.current[sessionId] = pc;
-
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    if (clientId) {
-      socket.send(
-        JSON.stringify({
-          type: 'offer',
-          offer: pc.localDescription,
-          sender: clientId,
-          receiver: sessionId,
-        })
-      );
-    }
-  };
-
-
-  const handleOffer = async (offer, sender) => {
-    const pc = createPeerConnection(sender);
-    peerConnections.current[sender] = pc;
+  // Обработка предложения от другого пользователя
+  const handleOffer = async (data) => {
+    const { sender, offer, userName } = data;
+    const pc = createPeerConnection(sender, userName);
 
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    if (clientId) {
-      socket.send(
-        JSON.stringify({
-          type: 'answer',
-          answer: pc.localDescription,
-          sender: clientId,
-          receiver: sender,
-        })
-      );
-    }
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'answer',
+        answer: pc.localDescription,
+        receiver: sender,
+      })
+    );
   };
 
-  const handleAnswer = async (answer, sender) => {
-    const pc = peerConnections.current[sender];
+  // Обработка ответа на наше предложение
+  const handleAnswer = async (data) => {
+    const { sender, answer } = data;
+    const pc = pcRef.current[sender];
     if (pc) {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
     }
   };
 
-  const handleCandidate = async (candidate, sender) => {
-    const pc = peerConnections.current[sender];
+  // Обработка ICE-кандидатов
+  const handleCandidate = async (data) => {
+    const { sender, candidate } = data;
+    const pc = pcRef.current[sender];
     if (pc) {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
   };
 
+  // Обработка отключения пользователя
   const handleUserLeft = (sessionId) => {
-    const pc = peerConnections.current[sessionId];
+    const pc = pcRef.current[sessionId];
     if (pc) {
       pc.close();
-      delete peerConnections.current[sessionId];
+      delete pcRef.current[sessionId];
     }
     setRemoteStreams((prevStreams) => {
       const updatedStreams = { ...prevStreams };
       delete updatedStreams[sessionId];
       return updatedStreams;
     });
-    setRemoteMediaStatus((prevStatus) => {
-      const updatedStatus = { ...prevStatus };
-      delete updatedStatus[sessionId];
-      return updatedStatus;
-    });
-    setRemoteUserNames((prevNames) => {
-      const updatedNames = { ...prevNames };
-      delete updatedNames[sessionId];
-      return updatedNames;
-    });
   };
 
+  // Переключение микрофона
   const toggleAudio = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((track) => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach((track) => {
         track.enabled = !track.enabled;
       });
       setIsAudioMuted(!isAudioMuted);
-
-      if (socket && socket.readyState === WebSocket.OPEN && clientId) {
-        // Отправляем сообщение о статусе микрофона
-        socket.send(
-          JSON.stringify({
-            type: 'media-status',
-            sender: clientId,
-            audioEnabled: !isAudioMuted,
-          })
-        );
-      }
     }
   };
 
+  // Переключение камеры
   const toggleVideo = () => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach((track) => {
+    if (localStream) {
+      localStream.getVideoTracks().forEach((track) => {
         track.enabled = !track.enabled;
       });
       setIsVideoMuted(!isVideoMuted);
-
-      if (socket && socket.readyState === WebSocket.OPEN && clientId) {
-        // Отправляем сообщение о статусе камеры
-        socket.send(
-          JSON.stringify({
-            type: 'media-status',
-            sender: clientId,
-            videoEnabled: !isVideoMuted,
-          })
-        );
-      }
     }
   };
 
   return (
-    <div className="video-call-container">
-      <div className="video-grid">
-        <div className="video-item">
-          <video ref={localVideoRef} autoPlay muted />
-          <div className="user-name-overlay">
-            {userName || 'Вы'}
+    <div className="videocall-container">
+      <div className="videocall-local-video">
+        <video ref={localVideoRef} autoPlay muted className="videocall-video" />
+        <p>{username}</p>
+      </div>
+
+      <div className="videocall-remote-videos">
+        {Object.entries(remoteStreams).map(([sessionId, data]) => (
+          <div key={sessionId} className="videocall-remote-video">
+            <VideoPlayer stream={data.stream} name={data.userName} />
           </div>
-          {/* Добавим кнопки управления */}
-          <div className="controls">
-            <button onClick={toggleAudio}>
-              <i className={`fas ${isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'}`}></i>
-            </button>
-            <button onClick={toggleVideo}>
-              <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`}></i>
-            </button>
-          </div>
-        </div>
-        {Object.entries(remoteStreams).map(([sessionId, stream]) => (
-          <VideoPlayer
-            key={sessionId}
-            stream={stream}
-            mediaStatus={remoteMediaStatus[sessionId]}
-            userName={remoteUserNames[sessionId]}
-          />
         ))}
+      </div>
+
+      <div className="videocall-controls">
+        <button onClick={toggleAudio}>
+          {isAudioMuted ? 'Включить микрофон' : 'Выключить микрофон'}
+        </button>
+        <button onClick={toggleVideo}>
+          {isVideoMuted ? 'Включить камеру' : 'Выключить камеру'}
+        </button>
       </div>
     </div>
   );
-
 }
 
-function VideoPlayer({ stream, mediaStatus, userName }) {
+// Компонент для отображения видео потока
+function VideoPlayer({ stream, name }) {
   const videoRef = useRef();
 
   useEffect(() => {
@@ -318,16 +268,9 @@ function VideoPlayer({ stream, mediaStatus, userName }) {
   }, [stream]);
 
   return (
-    <div className="video-item">
-      <video ref={videoRef} autoPlay muted={!mediaStatus?.audioEnabled} />
-      <div className="user-name-overlay">
-        {userName || 'Пользователь'}
-      </div>
-      {!mediaStatus?.videoEnabled && (
-        <div className="video-muted-overlay">
-          <i className="fas fa-video-slash"></i>
-        </div>
-      )}
+    <div>
+      <video ref={videoRef} autoPlay className="videocall-video" />
+      <p>{name}</p>
     </div>
   );
 }

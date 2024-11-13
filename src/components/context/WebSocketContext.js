@@ -1,3 +1,4 @@
+// src/components/context/WebSocketContext.js
 import React, { createContext, useEffect, useRef } from 'react';
 
 export const WebSocketContext = createContext(null);
@@ -6,7 +7,7 @@ export const WebSocketProvider = ({ children, meetingId }) => {
   const socketRef = useRef(null);
 
   useEffect(() => {
-    if (!meetingId) return; // Ждём, пока meetingId будет доступен
+    if (!meetingId) return;
 
     const socket = new WebSocket(`ws://localhost:8080/webrtc-signal?meetingId=${meetingId}`);
     socketRef.current = socket;
@@ -28,10 +29,10 @@ export const WebSocketProvider = ({ children, meetingId }) => {
         socket.close();
       }
     };
-  }, [meetingId]); // Добавляем meetingId в зависимости
+  }, [meetingId]);
 
   return (
-    <WebSocketContext.Provider value={socketRef.current}>
+    <WebSocketContext.Provider value={socketRef}>
       {children}
     </WebSocketContext.Provider>
   );
