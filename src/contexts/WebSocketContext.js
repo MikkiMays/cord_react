@@ -24,7 +24,9 @@ export const WebSocketProvider = ({ children, meetingId }) => {
     };
 
     return () => {
-      socket.close();
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.close();
+      }
     };
   }, [meetingId]); // Добавляем meetingId в зависимости
 
