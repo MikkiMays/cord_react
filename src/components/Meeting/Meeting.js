@@ -19,6 +19,7 @@ function Meeting() {
   const [error, setError] = useState('');
   const [meetingUnavailable, setMeetingUnavailable] = useState(false);
   const [joining, setJoining] = useState(false);
+  const autoJoinAttemptedRef = useRef(false);
 
   const mergeParticipants = (prev, nextList) => {
     const safeNext = nextList || [];
@@ -53,14 +54,14 @@ function Meeting() {
 
   useEffect(() => {
     if (
-      !autoJoinAttempted.current &&
+      !autoJoinAttemptedRef.current &&
       autoJoin &&
       !loadingInfo &&
       !joined &&
       !meetingUnavailable &&
       userName?.trim()
     ) {
-      autoJoinAttempted.current = true;
+      autoJoinAttemptedRef.current = true;
       handleJoin(userName.trim());
     }
   }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName]);
@@ -124,13 +125,23 @@ function Meeting() {
         </header>
 
         {!joined ? (
-          <JoinMeeting
-            defaultName={userName}
-            onJoin={handleJoin}
-            loading={loadingInfo || joining}
-            error={error}
-            disabled={meetingUnavailable}
-          />
+          meetingUnavailable ? (
+            <div className="join-card">
+              <div className="join-form">
+                <p className="eyebrow">Встреча недоступна</p>
+                <h3>Не удалось открыть встречу</h3>
+                <p className="muted">{error || 'Проверьте ссылку и попробуйте снова.'}</p>
+              </div>
+            </div>
+          ) : (
+            <JoinMeeting
+              defaultName={userName}
+              onJoin={handleJoin}
+              loading={loadingInfo || joining}
+              error={error}
+              disabled={meetingUnavailable}
+            />
+          )
         ) : (
           <div className="meeting-layout">
             <section className="stage">
