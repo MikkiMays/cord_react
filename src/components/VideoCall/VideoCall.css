@@ -14,6 +14,8 @@
 .video-item {
   position: relative;
   background-color: #000;
+  border-radius: 14px;
+  overflow: hidden;
 }
 
 video {
@@ -28,6 +30,7 @@ video {
   left: 50%;
   transform: translateX(-50%);
   display: flex;
+  gap: 8px;
 }
 
 .controls button {
@@ -43,6 +46,7 @@ video {
   display: flex;
   justify-content: center;
   align-items: center;
+  transition: background-color 0.2s ease;
 }
 
 .controls button:hover {
@@ -69,10 +73,40 @@ video {
 .user-name-overlay {
   position: absolute;
   bottom: 60px;
-  left: 0;
-  width: 100%;
-  text-align: center;
+  left: 12px;
+  width: auto;
+  max-width: 90%;
+  padding: 6px 10px;
+  text-align: left;
   color: #fff;
   font-size: 16px;
   text-shadow: 0 0 5px #000;
+  background: linear-gradient(120deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.3));
+  border-radius: 10px;
+}
+
+.media-badges {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  gap: 6px;
+}
+
+.badge {
+  background: rgba(0, 0, 0, 0.65);
+  color: #c8d0e0;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+}
+
+.badge.muted {
+  background: rgba(187, 68, 68, 0.65);
+  color: #ffe8e8;
+  border-color: rgba(255, 255, 255, 0.12);
 }
