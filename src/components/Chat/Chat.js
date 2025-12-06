@@ -1,85 +1,85 @@
 import './Chat.css';
-import React, { useState, useEffect, useContext } from 'react';
+import React, { useState, useEffect, useContext, useRef } from 'react';
 import { WebSocketContext } from '../../contexts/WebSocketContext';
+import { sendChatMessage } from '../../services/api';
 
-function Chat() {
+function Chat({ userName, meetingId }) {
   const socket = useContext(WebSocketContext);
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState('');
-  const currentUserId = '1'; // Замените на реальный ID пользователя
+  const messagesEndRef = useRef(null);
+  const currentUserId = userName || 'Вы';
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket) return undefined;
 
     const handleMessage = (event) => {
       const data = JSON.parse(event.data);
-
-      if (data.type === 'message') {
+      if (data.type === 'message' || data.type === 'chat') {
         setMessages((prevMessages) => [
           ...prevMessages,
-          { sender: data.sender, message: data.message },
+          { sender: data.senderName || data.sender, message: data.message },
         ]);
       }
     };
 
     socket.addEventListener('message', handleMessage);
-
-    return () => {
-      socket.removeEventListener('message', handleMessage);
-    };
+    return () => socket.removeEventListener('message', handleMessage);
   }, [socket]);
 
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
   const sendMessage = async () => {
-    if (!message) {
-      alert('Введите сообщение');
+    const trimmed = message.trim();
+    if (!trimmed) {
       return;
     }
 
-    const channelId = '1'; // Укажите реальный ID канала
-
     try {
-      const response = await fetch(`http://localhost:8080/api/chat/${channelId}/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userId: currentUserId,
-          message: message,
-        }),
-      });
-
-      if (response.ok) {
-        console.log('Сообщение отправлено:', message);
-        socket.send(
-          JSON.stringify({ type: 'message', sender: currentUserId, message: message })
-        );
-        setMessage('');
-      } else {
-        console.error('Ошибка при отправке сообщения');
-      }
+      await sendChatMessage(meetingId, currentUserId, trimmed);
     } catch (error) {
-      console.error('Ошибка:', error);
+      console.warn('Backend чат недоступен, отправляем только по WebSocket', error);
+    }
+
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(
+        JSON.stringify({ type: 'chat', sender: currentUserId, senderName: userName, message: trimmed })
+      );
+    }
+    setMessages((prev) => [...prev, { sender: currentUserId, message: trimmed }]);
+    setMessage('');
+  };
+
+  const onEnterPress = (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
     }
   };
 
   return (
     <div className="chat-container">
-    <div className="messages">
-      {messages.map((msg, index) => (
-        <div key={index}>
-          {msg.sender}: {msg.message}
-        </div>
-      ))}
+      <div className="messages">
+        {messages.map((msg, index) => (
+          <div key={index} className={`message ${msg.sender === currentUserId ? 'self' : ''}`}>
+            <div className="sender">{msg.sender || 'Гость'}</div>
+            <div className="bubble">{msg.message}</div>
+          </div>
+        ))}
+        <div ref={messagesEndRef} />
+      </div>
+      <div className="message-input">
+        <textarea
+          placeholder="Напишите сообщение..."
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={onEnterPress}
+        />
+        <button onClick={sendMessage}>Отправить</button>
+      </div>
     </div>
-    <div className="message-input">
-      <input
-        type="text"
-        placeholder="Введите сообщение"
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-      />
-      <button onClick={sendMessage}>Отправить</button>
-    </div>
-  </div>
   );
 }
 

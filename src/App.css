@@ -1,29 +1,57 @@
+:root {
+  --bg: #0b0c10;
+  --panel: #12141a;
+  --card: #1b1f27;
+  --accent: #5a8dee;
+  --muted: #8892b0;
+  --border: #1f2530;
+  --shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+* {
+  box-sizing: border-box;
+}
+
 body {
-  font-family: Arial, sans-serif;
   margin: 0;
-  padding: 0;
-  background-color: #f4f4f4;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background: radial-gradient(circle at 20% 20%, rgba(90, 141, 238, 0.08), transparent 40%),
+    radial-gradient(circle at 80% 0%, rgba(87, 227, 137, 0.08), transparent 40%),
+    var(--bg);
+  color: #f7f9fb;
 }
 
-h1 {
-  text-align: center;
-}
-
-#chat {
-  border: 1px solid #ccc;
-  padding: 10px;
-  margin-bottom: 20px;
-  background-color: #fff;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-input {
-  width: 300px;
-  padding: 10px;
-  margin-right: 10px;
+a {
+  color: inherit;
 }
 
 button {
-  padding: 10px;
+  cursor: pointer;
+  border: none;
+  border-radius: 10px;
+  font-weight: 600;
+  transition: transform 0.1s ease, box-shadow 0.2s ease;
+}
+
+button:active {
+  transform: translateY(1px);
+}
+
+input {
+  background: #0f1117;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: #f7f9fb;
+  padding: 12px 14px;
+  outline: none;
+  width: 100%;
+}
+
+input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(90, 141, 238, 0.2);
+}
+
+.app-shell {
+  min-height: 100vh;
 }
