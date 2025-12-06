@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import Chat from '../Chat/Chat';
 import VideoCall from '../VideoCall/VideoCall';
@@ -11,6 +11,7 @@ function Meeting() {
   const { meetingId } = useParams();
   const location = useLocation();
   const [userName, setUserName] = useState(location.state?.name || '');
+  const autoJoin = Boolean(location.state?.autoJoin);
   const [joined, setJoined] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
   const [participants, setParticipants] = useState([]);
@@ -49,6 +50,20 @@ function Meeting() {
     };
     loadMeeting();
   }, [meetingId]);
+
+  useEffect(() => {
+    if (
+      !autoJoinAttempted.current &&
+      autoJoin &&
+      !loadingInfo &&
+      !joined &&
+      !meetingUnavailable &&
+      userName?.trim()
+    ) {
+      autoJoinAttempted.current = true;
+      handleJoin(userName.trim());
+    }
+  }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName]);
 
   useEffect(() => {
     const loadParticipants = async () => {
