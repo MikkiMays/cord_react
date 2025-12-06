@@ -11,18 +11,18 @@ function Home() {
   const [loading, setLoading] = useState(false);
   const displayName = name.trim() || 'Гость';
 
-  const goToMeeting = (id) => {
-    navigate(`/meeting/${id}`, { state: { name: displayName } });
+  const goToMeeting = (id, options = {}) => {
+    navigate(`/meeting/${id}`, { state: { name: displayName, ...options } });
   };
 
   const handleCreateMeeting = async () => {
     setLoading(true);
     try {
       const meeting = await createMeeting({ hostName: displayName });
-      goToMeeting(meeting.id || meeting.meetingId);
+      goToMeeting(meeting.id || meeting.meetingId, { autoJoin: true });
     } catch (error) {
       console.warn('Не удалось вызвать API создания встречи, используем локальный ID', error);
-      goToMeeting(uuidv4());
+      goToMeeting(uuidv4(), { autoJoin: true });
     } finally {
       setLoading(false);
     }
@@ -33,7 +33,7 @@ function Home() {
       alert('Введите идентификатор встречи');
       return;
     }
-    goToMeeting(meetingId.trim());
+    goToMeeting(meetingId.trim(), { autoJoin: false });
   };
 
   return (
