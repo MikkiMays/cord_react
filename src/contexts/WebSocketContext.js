@@ -1,37 +1,36 @@
-import React, { createContext, useEffect, useRef } from 'react';
+import React, { createContext, useEffect, useState } from 'react';
 
 export const WebSocketContext = createContext(null);
 
 export const WebSocketProvider = ({ children, meetingId }) => {
-  const socketRef = useRef(null);
+  const [socket, setSocket] = useState(null);
 
   useEffect(() => {
-    if (!meetingId) return; // Ждём, пока meetingId будет доступен
+    if (!meetingId) return undefined;
 
-    const socket = new WebSocket(`ws://localhost:8080/webrtc-signal?meetingId=${meetingId}`);
-    socketRef.current = socket;
+    const connection = new WebSocket(`ws://localhost:8080/webrtc-signal?meetingId=${meetingId}`);
+    setSocket(connection);
 
-    socket.onopen = () => {
+    connection.onopen = () => {
       console.log('Соединение с сервером установлено');
     };
 
-    socket.onerror = (error) => {
+    connection.onerror = (error) => {
       console.error('Ошибка WebSocket:', error);
     };
 
-    socket.onclose = () => {
+    connection.onclose = () => {
       console.log('Соединение с сервером закрыто');
     };
 
     return () => {
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.close();
-      }
+      connection.close();
+      setSocket(null);
     };
-  }, [meetingId]); // Добавляем meetingId в зависимости
+  }, [meetingId]);
 
   return (
-    <WebSocketContext.Provider value={socketRef.current}>
+    <WebSocketContext.Provider value={socket}>
       {children}
     </WebSocketContext.Provider>
   );

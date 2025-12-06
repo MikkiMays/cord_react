@@ -3,7 +3,7 @@ import { WebSocketContext } from '../../contexts/WebSocketContext';
 import './VideoCall.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
 
-function VideoCall({ userName }) {
+function VideoCall({ userName, onParticipantsChange }) {
   const socket = useContext(WebSocketContext);
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -14,6 +14,12 @@ function VideoCall({ userName }) {
   const [isVideoMuted, setIsVideoMuted] = useState(false);
   const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
   const [remoteUserNames, setRemoteUserNames] = useState({});
+
+  const notifyParticipants = (names) => {
+    onParticipantsChange?.(
+      Object.entries(names).map(([sessionId, name]) => ({ id: sessionId, name: name || 'Участник' }))
+    );
+  };
 
   const handleMediaStatus = (sender, audioEnabled, videoEnabled) => {
     setRemoteMediaStatus((prevStatus) => ({
@@ -26,7 +32,6 @@ function VideoCall({ userName }) {
   };
 
   useEffect(() => {
-    // Получение локального медиапотока
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
@@ -35,13 +40,13 @@ function VideoCall({ userName }) {
           localVideoRef.current.srcObject = stream;
         }
 
-        // Отправляем сообщение о присоединении
-        if (socket && socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'join' }));
-        } else if (socket) {
-          socket.addEventListener('open', () => {
-            socket.send(JSON.stringify({ type: 'join' }));
-          });
+        if (socket) {
+          const join = () => socket.send(JSON.stringify({ type: 'join' }));
+          if (socket.readyState === WebSocket.OPEN) {
+            join();
+          } else {
+            socket.addEventListener('open', join, { once: true });
+          }
         }
       })
       .catch((error) => {
@@ -50,7 +55,6 @@ function VideoCall({ userName }) {
       });
 
     return () => {
-      // Очистка при размонтировании
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
       }
@@ -58,32 +62,30 @@ function VideoCall({ userName }) {
       peerConnections.current = {};
       setRemoteStreams({});
       setRemoteMediaStatus({});
+      setRemoteUserNames({});
     };
   }, [socket]);
 
   useEffect(() => {
-    if (!socket) return;
+    if (!socket) return undefined;
 
     const handleSocketMessage = async (event) => {
       const data = JSON.parse(event.data);
-      console.log('Получено сообщение:', data);
-
       const { type, sender, sessionId } = data;
 
       switch (type) {
         case 'your-id':
           setClientId(sessionId);
-          if (socket && socket.readyState === WebSocket.OPEN) {
+          if (socket.readyState === WebSocket.OPEN) {
             socket.send(
               JSON.stringify({
                 type: 'set-name',
                 name: userName,
-                sessionId: sessionId,
+                sessionId,
               })
             );
           }
           break;
-
         case 'new-user':
           await handleNewUser(data.sessionId, data.userName);
           break;
@@ -102,27 +104,31 @@ function VideoCall({ userName }) {
         case 'media-status':
           handleMediaStatus(sender, data.audioEnabled, data.videoEnabled);
           break;
+        case 'set-name':
+          setRemoteUserNames((prev) => ({ ...prev, [sessionId]: data.name }));
+          break;
         default:
           break;
       }
     };
 
     socket.addEventListener('message', handleSocketMessage);
+    return () => socket.removeEventListener('message', handleSocketMessage);
+  }, [socket, userName]);
 
-    return () => {
-      socket.removeEventListener('message', handleSocketMessage);
-    };
-  }, [socket]);
+  useEffect(() => {
+    notifyParticipants(remoteUserNames);
+  }, [remoteUserNames]);
 
   const createPeerConnection = (sessionId) => {
     const pc = new RTCPeerConnection({
       iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }, // Публичный STUN сервер Google
+        { urls: 'stun:stun.l.google.com:19302' },
       ],
     });
 
     pc.onicecandidate = (event) => {
-      if (event.candidate && clientId) {
+      if (event.candidate && clientId && socket?.readyState === WebSocket.OPEN) {
         socket.send(
           JSON.stringify({
             type: 'candidate',
@@ -141,7 +147,6 @@ function VideoCall({ userName }) {
       }));
     };
 
-    // Добавляем локальные треки в соединение
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current);
@@ -151,21 +156,19 @@ function VideoCall({ userName }) {
     return pc;
   };
 
-  const handleNewUser = async (sessionId, userName) => {
-    // Сохраняем имя пользователя
+  const handleNewUser = async (sessionId, newUserName) => {
     setRemoteUserNames((prevNames) => ({
       ...prevNames,
-      [sessionId]: userName,
+      [sessionId]: newUserName,
     }));
 
-    // Создаём соединение
     const pc = createPeerConnection(sessionId);
     peerConnections.current[sessionId] = pc;
 
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
 
-    if (clientId) {
+    if (clientId && socket?.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
           type: 'offer',
@@ -177,7 +180,6 @@ function VideoCall({ userName }) {
     }
   };
 
-
   const handleOffer = async (offer, sender) => {
     const pc = createPeerConnection(sender);
     peerConnections.current[sender] = pc;
@@ -187,7 +189,7 @@ function VideoCall({ userName }) {
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
 
-    if (clientId) {
+    if (clientId && socket?.readyState === WebSocket.OPEN) {
       socket.send(
         JSON.stringify({
           type: 'answer',
@@ -241,10 +243,9 @@ function VideoCall({ userName }) {
       localStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = !track.enabled;
       });
-      setIsAudioMuted(!isAudioMuted);
+      setIsAudioMuted((prev) => !prev);
 
-      if (socket && socket.readyState === WebSocket.OPEN && clientId) {
-        // Отправляем сообщение о статусе микрофона
+      if (socket?.readyState === WebSocket.OPEN && clientId) {
         socket.send(
           JSON.stringify({
             type: 'media-status',
@@ -261,10 +262,9 @@ function VideoCall({ userName }) {
       localStreamRef.current.getVideoTracks().forEach((track) => {
         track.enabled = !track.enabled;
       });
-      setIsVideoMuted(!isVideoMuted);
+      setIsVideoMuted((prev) => !prev);
 
-      if (socket && socket.readyState === WebSocket.OPEN && clientId) {
-        // Отправляем сообщение о статусе камеры
+      if (socket?.readyState === WebSocket.OPEN && clientId) {
         socket.send(
           JSON.stringify({
             type: 'media-status',
@@ -281,16 +281,13 @@ function VideoCall({ userName }) {
       <div className="video-grid">
         <div className="video-item">
           <video ref={localVideoRef} autoPlay muted />
-          <div className="user-name-overlay">
-            {userName || 'Вы'}
-          </div>
-          {/* Добавим кнопки управления */}
+          <div className="user-name-overlay">{userName || 'Вы'}</div>
           <div className="controls">
-            <button onClick={toggleAudio}>
-              <i className={`fas ${isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'}`}></i>
+            <button onClick={toggleAudio} title={isAudioMuted ? 'Включить микрофон' : 'Выключить микрофон'}>
+              <i className={`fas ${isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'}`} />
             </button>
-            <button onClick={toggleVideo}>
-              <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`}></i>
+            <button onClick={toggleVideo} title={isVideoMuted ? 'Включить камеру' : 'Выключить камеру'}>
+              <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`} />
             </button>
           </div>
         </div>
@@ -305,7 +302,6 @@ function VideoCall({ userName }) {
       </div>
     </div>
   );
-
 }
 
 function VideoPlayer({ stream, mediaStatus, userName }) {
@@ -320,12 +316,10 @@ function VideoPlayer({ stream, mediaStatus, userName }) {
   return (
     <div className="video-item">
       <video ref={videoRef} autoPlay muted={!mediaStatus?.audioEnabled} />
-      <div className="user-name-overlay">
-        {userName || 'Пользователь'}
-      </div>
+      <div className="user-name-overlay">{userName || 'Пользователь'}</div>
       {!mediaStatus?.videoEnabled && (
         <div className="video-muted-overlay">
-          <i className="fas fa-video-slash"></i>
+          <i className="fas fa-video-slash" />
         </div>
       )}
     </div>

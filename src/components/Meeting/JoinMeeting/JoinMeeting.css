@@ -1,24 +1,66 @@
-.join-meeting-container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    margin-top: 50px;
+.join-card {
+  display: grid;
+  grid-template-columns: 1.3fr 1fr;
+  gap: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 18px;
+}
+
+.preview {
+  background: #0f1117;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 260px;
+}
+
+.placeholder-video {
+  width: 100%;
+  max-width: 420px;
+  height: 240px;
+  background: linear-gradient(135deg, rgba(90, 141, 238, 0.25), rgba(93, 211, 158, 0.2));
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.avatar {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.join-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.join-form h3 {
+  margin: 0;
+}
+
+.error-hint {
+  color: #ffbdbd;
+  background: rgba(255, 91, 91, 0.1);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 91, 91, 0.3);
+  border-radius: 10px;
+}
+
+@media (max-width: 900px) {
+  .join-card {
+    grid-template-columns: 1fr;
   }
-  
-  .join-meeting-container h2 {
-    margin-bottom: 20px;
-  }
-  
-  .join-meeting-container input {
-    padding: 10px;
-    font-size: 16px;
-    margin-bottom: 10px;
-    width: 300px;
-  }
-  
-  .join-meeting-container button {
-    padding: 10px 20px;
-    font-size: 16px;
-    cursor: pointer;
-  }
-  
+}
