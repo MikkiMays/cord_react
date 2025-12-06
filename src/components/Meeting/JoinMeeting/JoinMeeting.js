@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './JoinMeeting.css';
 
-function JoinMeeting({ defaultName = '', onJoin, loading, error }) {
+function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = false }) {
   const [userName, setUserName] = useState(defaultName);
 
   const handleSubmit = (event) => {
@@ -32,8 +32,8 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error }) {
           onChange={(e) => setUserName(e.target.value)}
         />
         {error && <div className="error-hint">{error}</div>}
-        <button type="submit" className="primary" disabled={loading}>
-          {loading ? 'Проверяем встречу…' : 'Войти в встречу'}
+        <button type="submit" className="primary" disabled={loading || disabled}>
+          {loading ? 'Проверяем встречу…' : disabled ? 'Встреча недоступна' : 'Войти в встречу'}
         </button>
       </form>
     </div>
