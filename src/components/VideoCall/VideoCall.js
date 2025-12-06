@@ -15,6 +15,18 @@ function VideoCall({ userName, onParticipantsChange }) {
   const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
   const [remoteUserNames, setRemoteUserNames] = useState({});
 
+  const broadcastMediaStatus = (status) => {
+    if (socket?.readyState === WebSocket.OPEN && clientId) {
+      socket.send(
+        JSON.stringify({
+          type: 'media-status',
+          sender: clientId,
+          ...status,
+        })
+      );
+    }
+  };
+
   const notifyParticipants = (names) => {
     onParticipantsChange?.(
       Object.entries(names).map(([sessionId, name]) => ({ id: sessionId, name: name || 'Участник' }))
@@ -25,8 +37,8 @@ function VideoCall({ userName, onParticipantsChange }) {
     setRemoteMediaStatus((prevStatus) => ({
       ...prevStatus,
       [sender]: {
-        audioEnabled: audioEnabled !== undefined ? audioEnabled : prevStatus[sender]?.audioEnabled,
-        videoEnabled: videoEnabled !== undefined ? videoEnabled : prevStatus[sender]?.videoEnabled,
+        audioEnabled: audioEnabled !== undefined ? audioEnabled : prevStatus[sender]?.audioEnabled ?? true,
+        videoEnabled: videoEnabled !== undefined ? videoEnabled : prevStatus[sender]?.videoEnabled ?? true,
       },
     }));
   };
@@ -41,7 +53,13 @@ function VideoCall({ userName, onParticipantsChange }) {
         }
 
         if (socket) {
-          const join = () => socket.send(JSON.stringify({ type: 'join' }));
+          const join = () => {
+            socket.send(JSON.stringify({ type: 'join' }));
+            broadcastMediaStatus({
+              audioEnabled: !isAudioMuted,
+              videoEnabled: !isVideoMuted,
+            });
+          };
           if (socket.readyState === WebSocket.OPEN) {
             join();
           } else {
@@ -84,6 +102,10 @@ function VideoCall({ userName, onParticipantsChange }) {
                 sessionId,
               })
             );
+            broadcastMediaStatus({
+              audioEnabled: !isAudioMuted,
+              videoEnabled: !isVideoMuted,
+            });
           }
           break;
         case 'new-user':
@@ -119,6 +141,12 @@ function VideoCall({ userName, onParticipantsChange }) {
   useEffect(() => {
     notifyParticipants(remoteUserNames);
   }, [remoteUserNames]);
+
+  useEffect(() => {
+    if (clientId && socket?.readyState === WebSocket.OPEN) {
+      broadcastMediaStatus({ audioEnabled: !isAudioMuted, videoEnabled: !isVideoMuted });
+    }
+  }, [clientId, isAudioMuted, isVideoMuted, socket]);
 
   const createPeerConnection = (sessionId) => {
     const pc = new RTCPeerConnection({
@@ -161,6 +189,8 @@ function VideoCall({ userName, onParticipantsChange }) {
       ...prevNames,
       [sessionId]: newUserName,
     }));
+
+    handleMediaStatus(sessionId, true, true);
 
     const pc = createPeerConnection(sessionId);
     peerConnections.current[sessionId] = pc;
@@ -240,39 +270,23 @@ function VideoCall({ userName, onParticipantsChange }) {
 
   const toggleAudio = () => {
     if (localStreamRef.current) {
+      const nextValue = isAudioMuted ? true : false;
       localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = !track.enabled;
+        track.enabled = nextValue;
       });
-      setIsAudioMuted((prev) => !prev);
-
-      if (socket?.readyState === WebSocket.OPEN && clientId) {
-        socket.send(
-          JSON.stringify({
-            type: 'media-status',
-            sender: clientId,
-            audioEnabled: !isAudioMuted,
-          })
-        );
-      }
+      setIsAudioMuted(!nextValue);
+      broadcastMediaStatus({ audioEnabled: nextValue });
     }
   };
 
   const toggleVideo = () => {
     if (localStreamRef.current) {
+      const nextValue = isVideoMuted ? true : false;
       localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.enabled = !track.enabled;
+        track.enabled = nextValue;
       });
-      setIsVideoMuted((prev) => !prev);
-
-      if (socket?.readyState === WebSocket.OPEN && clientId) {
-        socket.send(
-          JSON.stringify({
-            type: 'media-status',
-            sender: clientId,
-            videoEnabled: !isVideoMuted,
-          })
-        );
-      }
+      setIsVideoMuted(!nextValue);
+      broadcastMediaStatus({ videoEnabled: nextValue });
     }
   };
 
@@ -282,6 +296,25 @@ function VideoCall({ userName, onParticipantsChange }) {
         <div className="video-item">
           <video ref={localVideoRef} autoPlay muted />
           <div className="user-name-overlay">{userName || 'Вы'}</div>
+          <div className="media-badges">
+            <span className={`badge ${isAudioMuted ? 'muted' : ''}`}>
+              <i className={`fas ${isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'}`} />
+            </span>
+            <span className={`badge ${isVideoMuted ? 'muted' : ''}`}>
+              <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`} />
+            </span>
+          </div>
+          {!isVideoMuted && localStreamRef.current &&
+            !localStreamRef.current.getVideoTracks().some((t) => t.enabled) && (
+              <div className="video-muted-overlay">
+                <i className="fas fa-video-slash" />
+              </div>
+            )}
+          {isVideoMuted && (
+            <div className="video-muted-overlay">
+              <i className="fas fa-video-slash" />
+            </div>
+          )}
           <div className="controls">
             <button onClick={toggleAudio} title={isAudioMuted ? 'Включить микрофон' : 'Выключить микрофон'}>
               <i className={`fas ${isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'}`} />
@@ -317,7 +350,15 @@ function VideoPlayer({ stream, mediaStatus, userName }) {
     <div className="video-item">
       <video ref={videoRef} autoPlay muted={!mediaStatus?.audioEnabled} />
       <div className="user-name-overlay">{userName || 'Пользователь'}</div>
-      {!mediaStatus?.videoEnabled && (
+      <div className="media-badges">
+        <span className={`badge ${mediaStatus?.audioEnabled === false ? 'muted' : ''}`}>
+          <i className={`fas ${mediaStatus?.audioEnabled === false ? 'fa-microphone-slash' : 'fa-microphone'}`} />
+        </span>
+        <span className={`badge ${mediaStatus?.videoEnabled === false ? 'muted' : ''}`}>
+          <i className={`fas ${mediaStatus?.videoEnabled === false ? 'fa-video-slash' : 'fa-video'}`} />
+        </span>
+      </div>
+      {mediaStatus?.videoEnabled === false && (
         <div className="video-muted-overlay">
           <i className="fas fa-video-slash" />
         </div>

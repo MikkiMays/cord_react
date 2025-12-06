@@ -50,10 +50,16 @@ export async function fetchParticipants(meetingId) {
   return request(`/api/meetings/${meetingId}/participants`);
 }
 
+export async function fetchChatHistory(meetingId) {
+  if (!meetingId) throw new Error('Missing meetingId');
+  return request(`/api/meetings/${meetingId}/chat`);
+}
+
 export default {
   createMeeting,
   fetchMeeting,
   joinMeeting,
   sendChatMessage,
   fetchParticipants,
+  fetchChatHistory,
 };

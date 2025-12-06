@@ -1,7 +1,7 @@
 import './Chat.css';
 import React, { useState, useEffect, useContext, useRef } from 'react';
 import { WebSocketContext } from '../../contexts/WebSocketContext';
-import { sendChatMessage } from '../../services/api';
+import { fetchChatHistory, sendChatMessage } from '../../services/api';
 
 function Chat({ userName, meetingId }) {
   const socket = useContext(WebSocketContext);
@@ -9,6 +9,27 @@ function Chat({ userName, meetingId }) {
   const [message, setMessage] = useState('');
   const messagesEndRef = useRef(null);
   const currentUserId = userName || 'Вы';
+
+  useEffect(() => {
+    const loadHistory = async () => {
+      try {
+        const history = await fetchChatHistory(meetingId);
+        if (Array.isArray(history)) {
+          setMessages((prev) =>
+            prev.length
+              ? prev
+              : history.map((item) => ({ sender: item.senderName || item.sender, message: item.message }))
+          );
+        }
+      } catch (error) {
+        console.warn('Не удалось загрузить историю чата', error);
+      }
+    };
+
+    if (meetingId) {
+      loadHistory();
+    }
+  }, [meetingId]);
 
   useEffect(() => {
     if (!socket) return undefined;

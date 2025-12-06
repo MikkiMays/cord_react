@@ -5,7 +5,7 @@ import VideoCall from '../VideoCall/VideoCall';
 import JoinMeeting from './JoinMeeting/JoinMeeting';
 import './Meeting.css';
 import { WebSocketProvider } from '../../contexts/WebSocketContext';
-import { fetchMeeting, fetchParticipants } from '../../services/api';
+import { fetchMeeting, fetchParticipants, joinMeeting } from '../../services/api';
 
 function Meeting() {
   const { meetingId } = useParams();
@@ -16,15 +16,33 @@ function Meeting() {
   const [participants, setParticipants] = useState([]);
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [error, setError] = useState('');
+  const [meetingUnavailable, setMeetingUnavailable] = useState(false);
+  const [joining, setJoining] = useState(false);
+
+  const mergeParticipants = (prev, nextList) => {
+    const safeNext = nextList || [];
+    const combined = [...prev, ...safeNext].filter(Boolean);
+    const uniqueIds = new Map();
+    combined.forEach((p) => {
+      if (p?.name) {
+        uniqueIds.set(p.name, p);
+      }
+    });
+    return Array.from(uniqueIds.values());
+  };
 
   useEffect(() => {
     const loadMeeting = async () => {
       try {
         const data = await fetchMeeting(meetingId);
         setMeetingTitle(data.title || 'Новая встреча');
+        setMeetingUnavailable(false);
+        setError('');
       } catch (err) {
         console.warn('Не удалось получить данные встречи, используем дефолтное значение', err);
-        setMeetingTitle('Новая встреча');
+        setMeetingTitle('Встреча недоступна');
+        setMeetingUnavailable(true);
+        setError('Встреча не найдена или её срок истёк. Проверьте ссылку и попробуйте снова.');
       } finally {
         setLoadingInfo(false);
       }
@@ -36,7 +54,7 @@ function Meeting() {
     const loadParticipants = async () => {
       try {
         const data = await fetchParticipants(meetingId);
-        setParticipants(data);
+        setParticipants((prev) => mergeParticipants(prev, data));
       } catch (err) {
         console.warn('Не удалось загрузить участников', err);
       }
@@ -52,9 +70,24 @@ function Meeting() {
       setError('Введите имя, чтобы коллеги знали, кто присоединился');
       return;
     }
-    setError('');
-    setUserName(name.trim());
-    setJoined(true);
+
+    if (meetingUnavailable) {
+      setError('Встреча не найдена, подключение невозможно.');
+      return;
+    }
+
+    setJoining(true);
+    joinMeeting(meetingId, name.trim())
+      .then(() => {
+        setError('');
+        setUserName(name.trim());
+        setJoined(true);
+      })
+      .catch((err) => {
+        console.warn('Не удалось присоединиться к встрече', err);
+        setError('Подключение отклонено: встреча не найдена или недоступна.');
+      })
+      .finally(() => setJoining(false));
   };
 
   const combinedParticipants = useMemo(() => {
@@ -79,13 +112,17 @@ function Meeting() {
           <JoinMeeting
             defaultName={userName}
             onJoin={handleJoin}
-            loading={loadingInfo}
+            loading={loadingInfo || joining}
             error={error}
+            disabled={meetingUnavailable}
           />
         ) : (
           <div className="meeting-layout">
             <section className="stage">
-              <VideoCall userName={userName} onParticipantsChange={setParticipants} />
+              <VideoCall
+                userName={userName}
+                onParticipantsChange={(list) => setParticipants((prev) => mergeParticipants(prev, list))}
+              />
             </section>
             <aside className="side-panel">
               <div className="panel-block">
