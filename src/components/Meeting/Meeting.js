@@ -1,11 +1,11 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import Chat from '../Chat/Chat';
 import VideoCall from '../VideoCall/VideoCall';
 import JoinMeeting from './JoinMeeting/JoinMeeting';
 import './Meeting.css';
 import { WebSocketProvider } from '../../contexts/WebSocketContext';
-import { fetchMeeting, fetchParticipants, joinMeeting } from '../../services/api';
+import { fetchMeeting, joinMeeting } from '../../services/api';
 
 function Meeting() {
   const { meetingId } = useParams();
@@ -14,26 +14,17 @@ function Meeting() {
   const autoJoin = Boolean(location.state?.autoJoin);
   const [joined, setJoined] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
-  const [participants, setParticipants] = useState([]);
+  const [participants, setParticipants] = useState([]);  // список участников (кроме текущего пользователя)
+  const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
+  const [localVideoEnabled, setLocalVideoEnabled] = useState(true);
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [error, setError] = useState('');
   const [meetingUnavailable, setMeetingUnavailable] = useState(false);
   const [joining, setJoining] = useState(false);
   const autoJoinAttemptedRef = useRef(false);
 
-  const mergeParticipants = (prev, nextList) => {
-    const safeNext = nextList || [];
-    const combined = [...prev, ...safeNext].filter(Boolean);
-    const uniqueIds = new Map();
-    combined.forEach((p) => {
-      if (p?.name) {
-        uniqueIds.set(p.name, p);
-      }
-    });
-    return Array.from(uniqueIds.values());
-  };
-
   useEffect(() => {
+    // Загрузка информации о встрече (название и проверка доступности)
     const loadMeeting = async () => {
       try {
         const data = await fetchMeeting(meetingId);
@@ -53,6 +44,7 @@ function Meeting() {
   }, [meetingId]);
 
   useEffect(() => {
+    // Автоподключение к новой встрече, если указано и имя уже введено
     if (
       !autoJoinAttemptedRef.current &&
       autoJoin &&
@@ -62,41 +54,29 @@ function Meeting() {
       userName?.trim()
     ) {
       autoJoinAttemptedRef.current = true;
-      handleJoin(userName.trim());
+      handleJoin(userName.trim(), true, true);
     }
   }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName]);
 
-  useEffect(() => {
-    const loadParticipants = async () => {
-      try {
-        const data = await fetchParticipants(meetingId);
-        setParticipants((prev) => mergeParticipants(prev, data));
-      } catch (err) {
-        console.warn('Не удалось загрузить участников', err);
-      }
-    };
-
-    if (joined) {
-      loadParticipants();
-    }
-  }, [joined, meetingId]);
-
-  const handleJoin = (name) => {
-    if (!name.trim()) {
+  // Обработчик нажатия "Войти в встречу"
+  const handleJoin = (name, initialAudioOn = true, initialVideoOn = true) => {
+    const trimmedName = name.trim();
+    if (!trimmedName) {
       setError('Введите имя, чтобы коллеги знали, кто присоединился');
       return;
     }
-
     if (meetingUnavailable) {
       setError('Встреча не найдена, подключение невозможно.');
       return;
     }
-
     setJoining(true);
-    joinMeeting(meetingId, name.trim())
+    joinMeeting(meetingId, trimmedName)
       .then(() => {
         setError('');
-        setUserName(name.trim());
+        setUserName(trimmedName);
+        // Сохраняем начальные состояния устройств (микрофон/камера)
+        setLocalAudioEnabled(initialAudioOn);
+        setLocalVideoEnabled(initialVideoOn);
         setJoined(true);
       })
       .catch((err) => {
@@ -106,26 +86,27 @@ function Meeting() {
       .finally(() => setJoining(false));
   };
 
-  const combinedParticipants = useMemo(() => {
-    const others = participants?.map((p) => p.name).filter(Boolean) || [];
-    const unique = Array.from(new Set([userName || 'Вы', ...others]));
-    return unique;
-  }, [participants, userName]);
+  // Обработчик изменения списка участников из компонента VideoCall
+  const handleParticipantsChange = (list) => {
+    setParticipants(list || []);
+  };
 
   return (
     <WebSocketProvider meetingId={meetingId}>
       <div className="meeting-shell">
+        {/* Шапка встречи с ID, названием и счетчиком участников */}
         <header className="meeting-header">
           <div>
             <p className="eyebrow">ID встречи</p>
             <h2>{meetingId}</h2>
             <p className="muted">{meetingTitle || 'Онлайн-созвон через cord'}</p>
           </div>
-          <div className="pill">{combinedParticipants.length} участников</div>
+          <div className="pill">{(participants.length + 1) || 1} участников</div>
         </header>
 
         {!joined ? (
           meetingUnavailable ? (
+            // Сообщение о недоступности встречи
             <div className="join-card">
               <div className="join-form">
                 <p className="eyebrow">Встреча недоступна</p>
@@ -134,6 +115,7 @@ function Meeting() {
               </div>
             </div>
           ) : (
+            // Экран пред-входа во встречу
             <JoinMeeting
               defaultName={userName}
               onJoin={handleJoin}
@@ -143,11 +125,18 @@ function Meeting() {
             />
           )
         ) : (
+          // Основной экран встречи: видео + чат + список участников
           <div className="meeting-layout">
             <section className="stage">
               <VideoCall
                 userName={userName}
-                onParticipantsChange={(list) => setParticipants((prev) => mergeParticipants(prev, list))}
+                initialAudioEnabled={localAudioEnabled}
+                initialVideoEnabled={localVideoEnabled}
+                onParticipantsChange={handleParticipantsChange}
+                onLocalMediaChange={(audioOn, videoOn) => {
+                  setLocalAudioEnabled(audioOn);
+                  setLocalVideoEnabled(videoOn);
+                }}
               />
             </section>
             <aside className="side-panel">
@@ -158,10 +147,28 @@ function Meeting() {
               <div className="panel-block participants">
                 <div className="panel-title">Участники</div>
                 <ul>
-                  {combinedParticipants.map((name) => (
-                    <li key={name}>
+                  {/* Текущий пользователь */}
+                  <li key="self">
+                    <span className="presence-dot" />
+                    {userName || 'Вы'}
+                    <span className={`badge ${localAudioEnabled ? '' : 'muted'}`}>
+                      <i className={`fas ${localAudioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
+                    </span>
+                    <span className={`badge ${localVideoEnabled ? '' : 'muted'}`}>
+                      <i className={`fas ${localVideoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
+                    </span>
+                  </li>
+                  {/* Прочие участники */}
+                  {participants.map((p) => (
+                    <li key={p.id}>
                       <span className="presence-dot" />
-                      {name}
+                      {p.name || 'Участник'}
+                      <span className={`badge ${p.audioEnabled ? '' : 'muted'}`}>
+                        <i className={`fas ${p.audioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
+                      </span>
+                      <span className={`badge ${p.videoEnabled ? '' : 'muted'}`}>
+                        <i className={`fas ${p.videoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
+                      </span>
                     </li>
                   ))}
                 </ul>

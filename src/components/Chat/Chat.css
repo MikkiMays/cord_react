@@ -7,12 +7,17 @@
 }
 
 .messages {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  flex: 0;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  position: sticky;
+  bottom: 0;
+  padding: 10px 8px 0;
+  margin-left: -8px;
+  margin-right: -8px;
+  background: linear-gradient(180deg, rgba(15, 17, 23, 0.85) 0%, rgba(15, 17, 23, 1) 35%, #0f1117 100%);
+  backdrop-filter: blur(6px);
 }
 
 .message {
@@ -57,12 +62,13 @@
   width: 100%;
   min-height: 56px;
   max-height: 120px;
-  resize: vertical;
+  resize: none;  /* Запрещаем изменение размера поля */
   background: #0f1117;
   border: 1px solid var(--border);
   border-radius: 12px;
   color: #f7f9fb;
   padding: 10px 12px;
+  overflow-y: auto;
 }
 
 .message-input button {

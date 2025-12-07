@@ -3,47 +3,29 @@ import { WebSocketContext } from '../../contexts/WebSocketContext';
 import './VideoCall.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
 
-function VideoCall({ userName, onParticipantsChange }) {
+function VideoCall({ userName, initialAudioEnabled = true, initialVideoEnabled = true, onParticipantsChange, onLocalMediaChange }) {
   const socket = useContext(WebSocketContext);
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
+  const peerConnections = useRef({});
+
   const [clientId, setClientId] = useState(null);
   const [remoteStreams, setRemoteStreams] = useState({});
-  const peerConnections = useRef({});
+  const [remoteUserNames, setRemoteUserNames] = useState({});
+  const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
   const [isAudioMuted, setIsAudioMuted] = useState(false);
   const [isVideoMuted, setIsVideoMuted] = useState(false);
-  const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
-  const [remoteUserNames, setRemoteUserNames] = useState({});
 
+  // Функция для рассылки своего статуса устройств
   const broadcastMediaStatus = (status) => {
     if (socket?.readyState === WebSocket.OPEN && clientId) {
-      socket.send(
-        JSON.stringify({
-          type: 'media-status',
-          sender: clientId,
-          ...status,
-        })
-      );
+      socket.send(JSON.stringify({ type: 'media-status', ...status }));
     }
   };
 
-  const notifyParticipants = (names) => {
-    onParticipantsChange?.(
-      Object.entries(names).map(([sessionId, name]) => ({ id: sessionId, name: name || 'Участник' }))
-    );
-  };
-
-  const handleMediaStatus = (sender, audioEnabled, videoEnabled) => {
-    setRemoteMediaStatus((prevStatus) => ({
-      ...prevStatus,
-      [sender]: {
-        audioEnabled: audioEnabled !== undefined ? audioEnabled : prevStatus[sender]?.audioEnabled ?? true,
-        videoEnabled: videoEnabled !== undefined ? videoEnabled : prevStatus[sender]?.videoEnabled ?? true,
-      },
-    }));
-  };
-
+  // Инициируем получение локального медиа и присоединение к звонку
   useEffect(() => {
+    if (!socket) return;
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
@@ -51,27 +33,31 @@ function VideoCall({ userName, onParticipantsChange }) {
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-
-        if (socket) {
-          const join = () => {
-            socket.send(JSON.stringify({ type: 'join' }));
-            broadcastMediaStatus({
-              audioEnabled: !isAudioMuted,
-              videoEnabled: !isVideoMuted,
-            });
-          };
-          if (socket.readyState === WebSocket.OPEN) {
-            join();
-          } else {
-            socket.addEventListener('open', join, { once: true });
-          }
+        // Применяем начальные настройки выключения микрофона/камеры, если задано
+        if (!initialAudioEnabled) {
+          stream.getAudioTracks().forEach(track => track.enabled = false);
+          setIsAudioMuted(true);
+        }
+        if (!initialVideoEnabled) {
+          stream.getVideoTracks().forEach(track => track.enabled = false);
+          setIsVideoMuted(true);
+        }
+        // После получения медиа – отправляем сигнал о присоединении
+        const joinMessage = () => {
+          socket.send(JSON.stringify({ type: 'join' }));
+        };
+        if (socket.readyState === WebSocket.OPEN) {
+          joinMessage();
+        } else {
+          socket.addEventListener('open', joinMessage, { once: true });
         }
       })
       .catch((error) => {
         console.error('Ошибка получения медиа:', error);
-        alert('Необходимо предоставить доступ к камере и микрофону для участия в видеовстрече.');
+        alert('Не удалось получить доступ к камере/микрофону. Проверьте настройки устройств.');
       });
 
+    // Очистка при размонтировании: остановка локальных треков и закрытие peerConnections
     return () => {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -79,172 +65,206 @@ function VideoCall({ userName, onParticipantsChange }) {
       Object.values(peerConnections.current).forEach((pc) => pc.close());
       peerConnections.current = {};
       setRemoteStreams({});
-      setRemoteMediaStatus({});
       setRemoteUserNames({});
+      setRemoteMediaStatus({});
     };
-  }, [socket]);
+  }, [socket, initialAudioEnabled, initialVideoEnabled]);
 
+  // Обработчик входящих сообщений WebSocket
   useEffect(() => {
-    if (!socket) return undefined;
-
+    if (!socket) return;
     const handleSocketMessage = async (event) => {
       const data = JSON.parse(event.data);
       const { type, sender, sessionId } = data;
-
       switch (type) {
-        case 'your-id':
-          setClientId(sessionId);
+        case 'your-id': {
+          // Получили свой ID, сохраняем его и отправляем имя и статус устройств
+          const myId = data.sessionId;
+          setClientId(myId);
           if (socket.readyState === WebSocket.OPEN) {
-            socket.send(
-              JSON.stringify({
-                type: 'set-name',
-                name: userName,
-                sessionId,
-              })
-            );
+            socket.send(JSON.stringify({ type: 'set-name', name: userName, sessionId: myId }));
+            // Отправляем начальные статусы аудио/видео
             broadcastMediaStatus({
               audioEnabled: !isAudioMuted,
               videoEnabled: !isVideoMuted,
             });
           }
           break;
-        case 'new-user':
-          await handleNewUser(data.sessionId, data.userName);
+        }
+        case 'participants': {
+          // Получили список существующих участников при подключении
+          const items = data.items || [];
+          // Обновляем словари имен и статусов участников
+          const initialNames = {};
+          const initialStatuses = {};
+          items.forEach((participant) => {
+            initialNames[participant.sessionId] = participant.userName;
+            initialStatuses[participant.sessionId] = {
+              audioEnabled: participant.audioEnabled !== false, 
+              videoEnabled: participant.videoEnabled !== false
+            };
+          });
+          setRemoteUserNames(initialNames);
+          setRemoteMediaStatus(initialStatuses);
           break;
-        case 'offer':
-          await handleOffer(data.offer, sender);
+        }
+        case 'new-user': {
+          // Новый участник вошел: сохраняем его имя, по умолчанию считаем устройства включёнными
+          setRemoteUserNames((prev) => ({
+            ...prev,
+            [data.sessionId]: data.userName
+          }));
+          setRemoteMediaStatus((prev) => ({
+            ...prev,
+            [data.sessionId]: {
+              audioEnabled: true,
+              videoEnabled: true
+            }
+          }));
+          // Инициируем WebRTC-подключение к новому участнику
+          await handleNewUser(data.sessionId);
           break;
-        case 'answer':
-          await handleAnswer(data.answer, sender);
-          break;
-        case 'candidate':
-          await handleCandidate(data.candidate, sender);
-          break;
-        case 'user-left':
+        }
+        case 'user-left': {
+          // Участник вышел: закрываем его PeerConnection и удаляем данные
           handleUserLeft(sessionId);
           break;
-        case 'media-status':
+        }
+        case 'media-status': {
+          // Обновление статуса камеры/микрофона от участника sender
           handleMediaStatus(sender, data.audioEnabled, data.videoEnabled);
           break;
-        case 'set-name':
+        }
+        case 'set-name': {
+          // Обновление имени участника (если кто-то сменил имя)
           setRemoteUserNames((prev) => ({ ...prev, [sessionId]: data.name }));
           break;
+        }
+        case 'offer': {
+          await handleOffer(data.offer, sender);
+          break;
+        }
+        case 'answer': {
+          await handleAnswer(data.answer, sender);
+          break;
+        }
+        case 'candidate': {
+          await handleCandidate(data.candidate, sender);
+          break;
+        }
         default:
           break;
       }
     };
-
     socket.addEventListener('message', handleSocketMessage);
     return () => socket.removeEventListener('message', handleSocketMessage);
-  }, [socket, userName]);
+  }, [socket, userName, isAudioMuted, isVideoMuted]);
 
+  // Отслеживаем изменения списков имен или статусов удалённых участников, объединяем для обновления списка
   useEffect(() => {
-    notifyParticipants(remoteUserNames);
-  }, [remoteUserNames]);
+    const participantsList = Object.entries(remoteUserNames).map(([id, name]) => ({
+      id,
+      name: name || 'Участник',
+      audioEnabled: remoteMediaStatus[id]?.audioEnabled !== false,
+      videoEnabled: remoteMediaStatus[id]?.videoEnabled !== false
+    }));
+    onParticipantsChange?.(participantsList);
+  }, [remoteUserNames, remoteMediaStatus, onParticipantsChange]);
 
+  // Отслеживаем изменения локального статуса устройств и уведомляем родительский компонент
   useEffect(() => {
+    onLocalMediaChange?.(!isAudioMuted, !isVideoMuted);
+    // Каждое изменение локального статуса также транслируем другим участникам
     if (clientId && socket?.readyState === WebSocket.OPEN) {
-      broadcastMediaStatus({ audioEnabled: !isAudioMuted, videoEnabled: !isVideoMuted });
+      broadcastMediaStatus({
+        audioEnabled: !isAudioMuted,
+        videoEnabled: !isVideoMuted
+      });
     }
-  }, [clientId, isAudioMuted, isVideoMuted, socket]);
+  }, [isAudioMuted, isVideoMuted, clientId]);
 
+  // Функция создания PeerConnection для нового участника
   const createPeerConnection = (sessionId) => {
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-      ],
+      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
-
     pc.onicecandidate = (event) => {
       if (event.candidate && clientId && socket?.readyState === WebSocket.OPEN) {
-        socket.send(
-          JSON.stringify({
-            type: 'candidate',
-            candidate: event.candidate,
-            sender: clientId,
-            receiver: sessionId,
-          })
-        );
+        socket.send(JSON.stringify({
+          type: 'candidate',
+          candidate: event.candidate,
+          sender: clientId,
+          receiver: sessionId,
+        }));
       }
     };
-
     pc.ontrack = (event) => {
       setRemoteStreams((prevStreams) => ({
         ...prevStreams,
         [sessionId]: event.streams[0],
       }));
     };
-
+    // Добавляем свои медиатреки в новый PeerConnection
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
         pc.addTrack(track, localStreamRef.current);
       });
     }
-
     return pc;
   };
 
-  const handleNewUser = async (sessionId, newUserName) => {
-    setRemoteUserNames((prevNames) => ({
-      ...prevNames,
-      [sessionId]: newUserName,
-    }));
-
-    handleMediaStatus(sessionId, true, true);
-
-    const pc = createPeerConnection(sessionId);
-    peerConnections.current[sessionId] = pc;
-
+  // Обработка прихода нового участника (мы — существующий участник, отправляем ему offer)
+  const handleNewUser = async (newSessionId) => {
+    // Создаем запись о новом участнике (PeerConnection + предлагаем соединение)
+    const pc = createPeerConnection(newSessionId);
+    peerConnections.current[newSessionId] = pc;
+    // Генерируем оффер и отправляем его новому участнику
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-
     if (clientId && socket?.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({
-          type: 'offer',
-          offer: pc.localDescription,
-          sender: clientId,
-          receiver: sessionId,
-        })
-      );
+      socket.send(JSON.stringify({
+        type: 'offer',
+        offer: pc.localDescription,
+        sender: clientId,
+        receiver: newSessionId,
+      }));
     }
   };
 
-  const handleOffer = async (offer, sender) => {
-    const pc = createPeerConnection(sender);
-    peerConnections.current[sender] = pc;
-
+  // Обработка полученного оффера (мы — новый участник, получаем offer и отвечаем answer)
+  const handleOffer = async (offer, senderId) => {
+    const pc = createPeerConnection(senderId);
+    peerConnections.current[senderId] = pc;
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
-
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
-
     if (clientId && socket?.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({
-          type: 'answer',
-          answer: pc.localDescription,
-          sender: clientId,
-          receiver: sender,
-        })
-      );
+      socket.send(JSON.stringify({
+        type: 'answer',
+        answer: pc.localDescription,
+        sender: clientId,
+        receiver: senderId,
+      }));
     }
   };
 
-  const handleAnswer = async (answer, sender) => {
-    const pc = peerConnections.current[sender];
+  // Обработка полученного ответа на наш оффер
+  const handleAnswer = async (answer, senderId) => {
+    const pc = peerConnections.current[senderId];
     if (pc) {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
     }
   };
 
-  const handleCandidate = async (candidate, sender) => {
-    const pc = peerConnections.current[sender];
+  // Обработка полученного кандидата ICE
+  const handleCandidate = async (candidate, senderId) => {
+    const pc = peerConnections.current[senderId];
     if (pc) {
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
   };
 
+  // Обработка отключения участника
   const handleUserLeft = (sessionId) => {
     const pc = peerConnections.current[sessionId];
     if (pc) {
@@ -252,47 +272,58 @@ function VideoCall({ userName, onParticipantsChange }) {
       delete peerConnections.current[sessionId];
     }
     setRemoteStreams((prevStreams) => {
-      const updatedStreams = { ...prevStreams };
-      delete updatedStreams[sessionId];
-      return updatedStreams;
+      const updated = { ...prevStreams };
+      delete updated[sessionId];
+      return updated;
     });
     setRemoteMediaStatus((prevStatus) => {
-      const updatedStatus = { ...prevStatus };
-      delete updatedStatus[sessionId];
-      return updatedStatus;
+      const updated = { ...prevStatus };
+      delete updated[sessionId];
+      return updated;
     });
     setRemoteUserNames((prevNames) => {
-      const updatedNames = { ...prevNames };
-      delete updatedNames[sessionId];
-      return updatedNames;
+      const updated = { ...prevNames };
+      delete updated[sessionId];
+      return updated;
     });
   };
 
+  // Обработка обновления статусов медиа удалённого участника
+  const handleMediaStatus = (senderId, audioEnabled, videoEnabled) => {
+    setRemoteMediaStatus((prevStatus) => ({
+      ...prevStatus,
+      [senderId]: {
+        audioEnabled: audioEnabled !== undefined ? audioEnabled : prevStatus[senderId]?.audioEnabled ?? true,
+        videoEnabled: videoEnabled !== undefined ? videoEnabled : prevStatus[senderId]?.videoEnabled ?? true,
+      },
+    }));
+  };
+
+  // Обработчики выключения/включения собственного микрофона и камеры
   const toggleAudio = () => {
     if (localStreamRef.current) {
-      const nextValue = isAudioMuted ? true : false;
+      const next = !isAudioMuted;
       localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = nextValue;
+        track.enabled = !isAudioMuted;
       });
-      setIsAudioMuted(!nextValue);
-      broadcastMediaStatus({ audioEnabled: nextValue });
+      setIsAudioMuted(next);
     }
   };
 
   const toggleVideo = () => {
     if (localStreamRef.current) {
-      const nextValue = isVideoMuted ? true : false;
+      const next = !isVideoMuted;
       localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.enabled = nextValue;
+        track.enabled = !isVideoMuted;
       });
-      setIsVideoMuted(!nextValue);
-      broadcastMediaStatus({ videoEnabled: nextValue });
+      setIsVideoMuted(next);
     }
   };
 
   return (
     <div className="video-call-container">
       <div className="video-grid">
+        {/* Свое видео */}
         <div className="video-item">
           <video ref={localVideoRef} autoPlay muted />
           <div className="user-name-overlay">{userName || 'Вы'}</div>
@@ -304,12 +335,7 @@ function VideoCall({ userName, onParticipantsChange }) {
               <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`} />
             </span>
           </div>
-          {!isVideoMuted && localStreamRef.current &&
-            !localStreamRef.current.getVideoTracks().some((t) => t.enabled) && (
-              <div className="video-muted-overlay">
-                <i className="fas fa-video-slash" />
-              </div>
-            )}
+          {/* Если видео отключено – затемняющий оверлей с иконкой камеры */}
           {isVideoMuted && (
             <div className="video-muted-overlay">
               <i className="fas fa-video-slash" />
@@ -324,6 +350,7 @@ function VideoCall({ userName, onParticipantsChange }) {
             </button>
           </div>
         </div>
+        {/* Потоки видео остальных участников */}
         {Object.entries(remoteStreams).map(([sessionId, stream]) => (
           <VideoPlayer
             key={sessionId}
@@ -338,14 +365,12 @@ function VideoCall({ userName, onParticipantsChange }) {
 }
 
 function VideoPlayer({ stream, mediaStatus, userName }) {
-  const videoRef = useRef();
-
+  const videoRef = useRef(null);
   useEffect(() => {
     if (videoRef.current) {
       videoRef.current.srcObject = stream;
     }
   }, [stream]);
-
   return (
     <div className="video-item">
       <video ref={videoRef} autoPlay muted={!mediaStatus?.audioEnabled} />

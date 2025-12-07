@@ -1,75 +1,59 @@
 import './Chat.css';
 import React, { useState, useEffect, useContext, useRef } from 'react';
 import { WebSocketContext } from '../../contexts/WebSocketContext';
-import { fetchChatHistory, sendChatMessage } from '../../services/api';
 
 function Chat({ userName, meetingId }) {
   const socket = useContext(WebSocketContext);
   const [messages, setMessages] = useState([]);
   const [message, setMessage] = useState('');
   const messagesEndRef = useRef(null);
-  const currentUserId = userName || 'Вы';
+  const currentUserLabel = userName || 'Вы';
 
+  // Подписываемся на события WebSocket для получения истории и новых сообщений
   useEffect(() => {
-    const loadHistory = async () => {
-      try {
-        const history = await fetchChatHistory(meetingId);
-        if (Array.isArray(history)) {
-          setMessages((prev) =>
-            prev.length
-              ? prev
-              : history.map((item) => ({ sender: item.senderName || item.sender, message: item.message }))
-          );
-        }
-      } catch (error) {
-        console.warn('Не удалось загрузить историю чата', error);
-      }
-    };
-
-    if (meetingId) {
-      loadHistory();
-    }
-  }, [meetingId]);
-
-  useEffect(() => {
-    if (!socket) return undefined;
-
+    if (!socket) return;
     const handleMessage = (event) => {
       const data = JSON.parse(event.data);
-      if (data.type === 'message' || data.type === 'chat') {
-        setMessages((prevMessages) => [
-          ...prevMessages,
-          { sender: data.senderName || data.sender, message: data.message },
-        ]);
+      if (data.type === 'chat' || data.type === 'message') {
+        // Получили новое сообщение чата
+        if (data.message && typeof data.message === 'object') {
+          // Если сообщение пришло как объект ChatMessage
+          setMessages((prev) => [
+            ...prev,
+            { sender: data.message.userName || 'Гость', message: data.message.content }
+          ]);
+        } else {
+          // На случай альтернативного формата
+          setMessages((prev) => [
+            ...prev,
+            { sender: data.senderName || data.sender || 'Гость', message: data.message }
+          ]);
+        }
       }
     };
-
     socket.addEventListener('message', handleMessage);
     return () => socket.removeEventListener('message', handleMessage);
   }, [socket]);
 
+  // Скроллим вниз по мере появления новых сообщений
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const sendMessage = async () => {
+  // Отправка сообщения
+  const sendMessage = () => {
     const trimmed = message.trim();
-    if (!trimmed) {
-      return;
-    }
-
-    try {
-      await sendChatMessage(meetingId, currentUserId, trimmed);
-    } catch (error) {
-      console.warn('Backend чат недоступен, отправляем только по WebSocket', error);
-    }
-
+    if (!trimmed) return;
+    // Отправляем сообщение сразу по WebSocket
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(
-        JSON.stringify({ type: 'chat', sender: currentUserId, senderName: userName, message: trimmed })
-      );
+      socket.send(JSON.stringify({
+        type: 'chat',
+        message: trimmed,
+        senderName: userName
+      }));
     }
-    setMessages((prev) => [...prev, { sender: currentUserId, message: trimmed }]);
+    // Добавляем сообщение в локальный список (от текущего пользователя)
+    setMessages((prev) => [...prev, { sender: currentUserLabel, message: trimmed }]);
     setMessage('');
   };
 
@@ -84,7 +68,7 @@ function Chat({ userName, meetingId }) {
     <div className="chat-container">
       <div className="messages">
         {messages.map((msg, index) => (
-          <div key={index} className={`message ${msg.sender === currentUserId ? 'self' : ''}`}>
+          <div key={index} className={`message ${msg.sender === currentUserLabel ? 'self' : ''}`}>
             <div className="sender">{msg.sender || 'Гость'}</div>
             <div className="bubble">{msg.message}</div>
           </div>
