@@ -3,6 +3,16 @@ import { WebSocketContext } from '../../contexts/WebSocketContext';
 import './VideoCall.css';
 import '@fortawesome/fontawesome-free/css/all.min.css';
 
+/**
+ * Компонент видеозвонка с WebRTC.
+ * 
+ * Протокол:
+ * 1. Получаем your-id -> сохраняем clientId, отправляем set-name
+ * 2. Получаем participants -> обновляем список (фильтруем себя)
+ * 3. Получаем new-user -> создаём WebRTC offer
+ * 4. WebRTC: offer -> answer -> candidate
+ * 5. media-status приходит через participants (сервер рассылает обновлённый список)
+ */
 function VideoCall({
   userName,
   initialAudioEnabled = true,
@@ -12,371 +22,537 @@ function VideoCall({
   onLeave,
 }) {
   const socket = useContext(WebSocketContext);
+  
+  // Refs - не вызывают re-render
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
-  const peerConnections = useRef({});
-  const joinSentRef = useRef(false);
+  const peerConnectionsRef = useRef({});
+  const clientIdRef = useRef(null);
+  const nameSentRef = useRef(false);
   const disconnectingRef = useRef(false);
+  const socketRef = useRef(socket);
+  const mediaInitializedRef = useRef(false);
 
-  const [clientId, setClientId] = useState(null);
+  // State для UI
   const [remoteStreams, setRemoteStreams] = useState({});
-  const [remoteUserNames, setRemoteUserNames] = useState({});
-  const [remoteMediaStatus, setRemoteMediaStatus] = useState({});
-  const [isAudioMuted, setIsAudioMuted] = useState(false);
-  const [isVideoMuted, setIsVideoMuted] = useState(false);
+  const [participants, setParticipants] = useState({});
+  const [isAudioMuted, setIsAudioMuted] = useState(!initialAudioEnabled);
+  const [isVideoMuted, setIsVideoMuted] = useState(!initialVideoEnabled);
 
-  const broadcastMediaStatus = useCallback((status) => {
-    if (socket?.readyState === WebSocket.OPEN && clientId) {
-      socket.send(JSON.stringify({ type: 'media-status', ...status }));
-    }
-  }, [socket, clientId]);
-
-  const sendLeave = useCallback(() => {
-    if (socket?.readyState === WebSocket.OPEN) {
-      disconnectingRef.current = true;
-      socket.send(JSON.stringify({ type: 'leave' }));
-    }
+  // Синхронизируем socketRef
+  useEffect(() => {
+    socketRef.current = socket;
   }, [socket]);
 
+  /**
+   * Отправка JSON через WebSocket
+   */
+  const sendMessage = useCallback((data) => {
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      socketRef.current.send(JSON.stringify(data));
+    }
+  }, []);
+
+  /**
+   * Отправка leave при выходе
+   */
+  const sendLeave = useCallback(() => {
+    if (!disconnectingRef.current) {
+      disconnectingRef.current = true;
+      sendMessage({ type: 'leave' });
+    }
+  }, [sendMessage]);
+
+  /**
+   * Создание RTCPeerConnection
+   */
+  const createPeerConnection = useCallback((sessionId) => {
+    if (peerConnectionsRef.current[sessionId]) {
+      console.log(`PeerConnection для ${sessionId} уже существует`);
+      return peerConnectionsRef.current[sessionId];
+    }
+
+    console.log(`Создаём PeerConnection для ${sessionId}`);
+
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    });
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        console.log(`Отправляем ICE candidate для ${sessionId}`);
+        sendMessage({
+          type: 'candidate',
+          candidate: event.candidate,
+          receiver: sessionId,
+        });
+      }
+    };
+
+    pc.ontrack = (event) => {
+      console.log(`Получен трек от ${sessionId}:`, event.track.kind);
+      if (event.streams && event.streams[0]) {
+        setRemoteStreams((prev) => ({
+          ...prev,
+          [sessionId]: event.streams[0],
+        }));
+      }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log(`ICE состояние ${sessionId}: ${pc.iceConnectionState}`);
+      if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
+        console.warn(`ICE соединение с ${sessionId} разорвано`);
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`Состояние соединения ${sessionId}: ${pc.connectionState}`);
+    };
+
+    // Добавляем локальные треки если они есть
+    if (localStreamRef.current) {
+      const tracks = localStreamRef.current.getTracks();
+      console.log(`Добавляем ${tracks.length} локальных треков к PeerConnection ${sessionId}`);
+      tracks.forEach((track) => {
+        pc.addTrack(track, localStreamRef.current);
+      });
+    } else {
+      console.warn(`Локальный поток ещё не готов при создании PeerConnection для ${sessionId}`);
+    }
+
+    peerConnectionsRef.current[sessionId] = pc;
+    return pc;
+  }, [sendMessage]);
+
+  /**
+   * Закрытие peer connection
+   */
+  const closePeerConnection = useCallback((sessionId) => {
+    const pc = peerConnectionsRef.current[sessionId];
+    if (pc) {
+      pc.close();
+      delete peerConnectionsRef.current[sessionId];
+    }
+    setRemoteStreams((prev) => {
+      const updated = { ...prev };
+      delete updated[sessionId];
+      return updated;
+    });
+  }, []);
+
+  /**
+   * Инициация WebRTC (отправка offer)
+   */
+  const initiateWebRTC = useCallback(async (sessionId) => {
+    try {
+      // Ждём немного, чтобы медиа успело инициализироваться
+      if (!localStreamRef.current) {
+        console.log(`Ожидаем инициализации медиа перед созданием offer для ${sessionId}...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+
+      const pc = createPeerConnection(sessionId);
+      
+      // Убеждаемся, что треки добавлены
+      if (localStreamRef.current && pc.getSenders().length === 0) {
+        console.log(`Добавляем треки перед созданием offer для ${sessionId}`);
+        localStreamRef.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStreamRef.current);
+        });
+      }
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      await pc.setLocalDescription(offer);
+      sendMessage({
+        type: 'offer',
+        offer: pc.localDescription,
+        receiver: sessionId,
+      });
+      console.log(`Отправлен offer для ${sessionId}`);
+    } catch (error) {
+      console.error(`Ошибка создания offer для ${sessionId}:`, error);
+    }
+  }, [createPeerConnection, sendMessage]);
+
+  /**
+   * Обработка offer
+   */
+  const handleOffer = useCallback(async (offer, senderId) => {
+    try {
+      console.log(`Получен offer от ${senderId}`);
+      const pc = createPeerConnection(senderId);
+      
+      // Убеждаемся, что треки добавлены перед ответом
+      if (localStreamRef.current && pc.getSenders().length === 0) {
+        console.log(`Добавляем треки перед созданием answer для ${senderId}`);
+        localStreamRef.current.getTracks().forEach((track) => {
+          pc.addTrack(track, localStreamRef.current);
+        });
+      }
+
+      await pc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendMessage({
+        type: 'answer',
+        answer: pc.localDescription,
+        receiver: senderId,
+      });
+      console.log(`Отправлен answer для ${senderId}`);
+    } catch (error) {
+      console.error(`Ошибка обработки offer от ${senderId}:`, error);
+    }
+  }, [createPeerConnection, sendMessage]);
+
+  /**
+   * Обработка answer
+   */
+  const handleAnswer = useCallback(async (answer, senderId) => {
+    try {
+      console.log(`Получен answer от ${senderId}`);
+      const pc = peerConnectionsRef.current[senderId];
+      if (!pc) {
+        console.warn(`PeerConnection для ${senderId} не найден`);
+        return;
+      }
+      if (pc.signalingState !== 'stable') {
+        await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        console.log(`Answer обработан для ${senderId}, состояние: ${pc.signalingState}`);
+      } else {
+        console.log(`Пропускаем answer для ${senderId}, соединение уже stable`);
+      }
+    } catch (error) {
+      console.error(`Ошибка обработки answer от ${senderId}:`, error);
+    }
+  }, []);
+
+  /**
+   * Обработка ICE candidate
+   */
+  const handleCandidate = useCallback(async (candidate, senderId) => {
+    try {
+      const pc = peerConnectionsRef.current[senderId];
+      if (!pc) {
+        console.warn(`PeerConnection для ${senderId} не найден при обработке ICE candidate`);
+        return;
+      }
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      console.log(`ICE candidate добавлен для ${senderId}`);
+    } catch (error) {
+      // Игнорируем ошибки ICE candidate если соединение ещё не готово
+      if (error.name !== 'InvalidStateError') {
+        console.error(`Ошибка ICE candidate для ${senderId}:`, error);
+      }
+    }
+  }, []);
+
+  /**
+   * Инициализация медиа
+   */
   useEffect(() => {
-    if (!socket) return undefined;
+    if (!socket) return;
+
     let mounted = true;
+
+    console.log('Запрашиваем доступ к камере и микрофону...');
 
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
       .then((stream) => {
-        if (!mounted) return;
+        if (!mounted) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        console.log('Медиа получено:', stream.getTracks().map(t => `${t.kind}:${t.id}`));
+
         localStreamRef.current = stream;
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
-        if (!initialAudioEnabled) {
-          stream.getAudioTracks().forEach((track) => {
-            track.enabled = false;
-          });
-          setIsAudioMuted(true);
-        }
-        if (!initialVideoEnabled) {
-          stream.getVideoTracks().forEach((track) => {
-            track.enabled = false;
-          });
-          setIsVideoMuted(true);
-        }
 
-        const tryJoin = () => {
-          if (!socket || joinSentRef.current) return;
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'join' }));
-            joinSentRef.current = true;
-          } else {
-            socket.addEventListener('open', tryJoin, { once: true });
+        // Применяем начальные настройки
+        stream.getAudioTracks().forEach((t) => { 
+          t.enabled = initialAudioEnabled;
+          console.log(`Аудио трек ${t.id}: enabled = ${initialAudioEnabled}`);
+        });
+        stream.getVideoTracks().forEach((t) => { 
+          t.enabled = initialVideoEnabled;
+          console.log(`Видео трек ${t.id}: enabled = ${initialVideoEnabled}`);
+        });
+        setIsAudioMuted(!initialAudioEnabled);
+        setIsVideoMuted(!initialVideoEnabled);
+        
+        // Отмечаем, что медиа инициализированы
+        mediaInitializedRef.current = true;
+        
+        // Добавляем треки ко всем существующим PeerConnections
+        Object.entries(peerConnectionsRef.current).forEach(([sessionId, pc]) => {
+          const senders = pc.getSenders();
+          if (senders.length === 0) {
+            console.log(`Добавляем треки к существующему PeerConnection ${sessionId}`);
+            stream.getTracks().forEach((track) => {
+              pc.addTrack(track, stream);
+            });
           }
-        };
-
-        tryJoin();
+        });
+        
+        // Отправляем начальный статус медиа на сервер
+        if (socketRef.current?.readyState === WebSocket.OPEN && clientIdRef.current) {
+          sendMessage({
+            type: 'media-status',
+            audioEnabled: initialAudioEnabled,
+            videoEnabled: initialVideoEnabled,
+          });
+        }
       })
       .catch((error) => {
         console.error('Ошибка получения медиа:', error);
-        alert('Не удалось получить доступ к камере/микрофону. Проверьте настройки устройств.');
+        alert('Не удалось получить доступ к камере/микрофону. Проверьте разрешения браузера.');
       });
 
     return () => {
       mounted = false;
       sendLeave();
       if (localStreamRef.current) {
-        localStreamRef.current.getTracks().forEach((track) => track.stop());
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+        localStreamRef.current = null;
       }
-      Object.values(peerConnections.current).forEach((pc) => pc.close());
-      peerConnections.current = {};
-      setRemoteStreams({});
-      setRemoteUserNames({});
-      setRemoteMediaStatus({});
+      mediaInitializedRef.current = false;
+      Object.keys(peerConnectionsRef.current).forEach(closePeerConnection);
     };
-  }, [socket, initialAudioEnabled, initialVideoEnabled, sendLeave]);
+  }, [socket, initialAudioEnabled, initialVideoEnabled, sendLeave, closePeerConnection, sendMessage]);
 
+  /**
+   * Обработка WebSocket сообщений
+   */
   useEffect(() => {
-    if (!socket) return undefined;
-    const handleClose = () => {
-      if (!disconnectingRef.current) {
-        onLeave?.();
+    if (!socket) return;
+
+    const handleMessage = async (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch (e) {
+        return;
       }
-    };
-    socket.addEventListener('close', handleClose);
-    return () => socket.removeEventListener('close', handleClose);
-  }, [socket, onLeave]);
 
-  const createPeerConnection = useCallback((sessionId) => {
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    });
-    pc.onicecandidate = (event) => {
-      if (event.candidate && clientId && socket?.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify({
-          type: 'candidate',
-          candidate: event.candidate,
-          sender: clientId,
-          receiver: sessionId,
-        }));
+      const { type, sender } = data;
+
+      // Фильтруем WebRTC сигналы не для нас
+      if (data.receiver && data.receiver !== clientIdRef.current) {
+        return;
       }
-    };
-    pc.ontrack = (event) => {
-      setRemoteStreams((prevStreams) => ({
-        ...prevStreams,
-        [sessionId]: event.streams[0],
-      }));
-    };
-
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
-      });
-    }
-    return pc;
-  }, [clientId, socket]);
-
-  const handleNewUser = useCallback(async (newSessionId) => {
-    const pc = createPeerConnection(newSessionId);
-    peerConnections.current[newSessionId] = pc;
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    if (clientId && socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'offer',
-        offer: pc.localDescription,
-        sender: clientId,
-        receiver: newSessionId,
-      }));
-    }
-  }, [clientId, createPeerConnection, socket]);
-
-  const handleOffer = useCallback(async (offer, senderId) => {
-    const pc = createPeerConnection(senderId);
-    peerConnections.current[senderId] = pc;
-    await pc.setRemoteDescription(new RTCSessionDescription(offer));
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    if (clientId && socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify({
-        type: 'answer',
-        answer: pc.localDescription,
-        sender: clientId,
-        receiver: senderId,
-      }));
-    }
-  }, [clientId, createPeerConnection, socket]);
-
-  const handleAnswer = useCallback(async (answer, senderId) => {
-    const pc = peerConnections.current[senderId];
-    if (pc) {
-      await pc.setRemoteDescription(new RTCSessionDescription(answer));
-    }
-  }, []);
-
-  const handleCandidate = useCallback(async (candidate, senderId) => {
-    const pc = peerConnections.current[senderId];
-    if (pc) {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-  }, []);
-
-  const handleUserLeft = useCallback((sessionId) => {
-    const pc = peerConnections.current[sessionId];
-    if (pc) {
-      pc.close();
-      delete peerConnections.current[sessionId];
-    }
-    setRemoteStreams((prevStreams) => {
-      const updated = { ...prevStreams };
-      delete updated[sessionId];
-      return updated;
-    });
-    setRemoteMediaStatus((prevStatus) => {
-      const updated = { ...prevStatus };
-      delete updated[sessionId];
-      return updated;
-    });
-    setRemoteUserNames((prevNames) => {
-      const updated = { ...prevNames };
-      delete updated[sessionId];
-      return updated;
-    });
-  }, []);
-
-  const handleMediaStatus = useCallback((senderId, audioEnabled, videoEnabled) => {
-    setRemoteMediaStatus((prevStatus) => ({
-      ...prevStatus,
-      [senderId]: {
-        audioEnabled:
-          audioEnabled !== undefined ? audioEnabled : prevStatus[senderId]?.audioEnabled ?? true,
-        videoEnabled:
-          videoEnabled !== undefined ? videoEnabled : prevStatus[senderId]?.videoEnabled ?? true,
-      },
-    }));
-  }, []);
-
-  useEffect(() => {
-    if (!socket) return undefined;
-    const handleSocketMessage = async (event) => {
-      const data = JSON.parse(event.data);
-      const { type, sender, sessionId } = data;
-      if (data.receiver && data.receiver !== clientId) return;
 
       switch (type) {
         case 'your-id': {
           const myId = data.sessionId;
-          setClientId(myId);
-          if (socket.readyState === WebSocket.OPEN) {
-            socket.send(JSON.stringify({ type: 'set-name', name: userName, sessionId: myId }));
-            broadcastMediaStatus({
-              audioEnabled: !isAudioMuted,
-              videoEnabled: !isVideoMuted,
-            });
+          console.log('Мой ID:', myId);
+          clientIdRef.current = myId;
+
+          // Отправляем set-name один раз
+          if (!nameSentRef.current) {
+            nameSentRef.current = true;
+            sendMessage({ type: 'set-name', name: userName });
+            console.log('Отправлено set-name:', userName);
           }
           break;
         }
+
         case 'participants': {
           const items = data.items || [];
-          const initialNames = {};
-          const initialStatuses = {};
-          items.forEach((participant) => {
-            initialNames[participant.sessionId] = participant.userName;
-            initialStatuses[participant.sessionId] = {
-              audioEnabled: participant.audioEnabled !== false,
-              videoEnabled: participant.videoEnabled !== false,
-            };
+          const myId = clientIdRef.current;
+
+          console.log('Получен список participants:', items.length, 'мой ID:', myId);
+
+          // Фильтруем себя и строим map
+          const map = {};
+          items.forEach((p) => {
+            if (p.sessionId !== myId) {
+              map[p.sessionId] = {
+                userName: p.userName,
+                audioEnabled: p.audioEnabled === true,
+                videoEnabled: p.videoEnabled === true,
+              };
+            }
           });
-          setRemoteUserNames(initialNames);
-          setRemoteMediaStatus(initialStatuses);
+
+          setParticipants(map);
+          console.log('Участников (без себя):', Object.keys(map).length);
           break;
         }
+
         case 'new-user': {
-          setRemoteUserNames((prev) => ({
-            ...prev,
-            [data.sessionId]: data.userName,
-          }));
-          setRemoteMediaStatus((prev) => ({
-            ...prev,
-            [data.sessionId]: {
-              audioEnabled: true,
-              videoEnabled: true,
-            },
-          }));
-          await handleNewUser(data.sessionId);
+          if (data.sessionId !== clientIdRef.current) {
+            console.log('Новый участник, инициируем WebRTC:', data.sessionId);
+            await initiateWebRTC(data.sessionId);
+          }
           break;
         }
+
         case 'user-left': {
-          handleUserLeft(sessionId);
+          const leftId = data.sessionId;
+          console.log('Участник вышел:', leftId);
+          closePeerConnection(leftId);
+          setParticipants((prev) => {
+            const updated = { ...prev };
+            delete updated[leftId];
+            return updated;
+          });
           break;
         }
-        case 'media-status': {
-          handleMediaStatus(sender, data.audioEnabled, data.videoEnabled);
-          break;
-        }
-        case 'set-name': {
-          setRemoteUserNames((prev) => ({ ...prev, [sessionId]: data.name }));
-          break;
-        }
-        case 'offer': {
+
+        case 'offer':
           await handleOffer(data.offer, sender);
           break;
-        }
-        case 'answer': {
+
+        case 'answer':
           await handleAnswer(data.answer, sender);
           break;
-        }
-        case 'candidate': {
+
+        case 'candidate':
           await handleCandidate(data.candidate, sender);
           break;
-        }
+
         default:
           break;
       }
     };
 
-    socket.addEventListener('message', handleSocketMessage);
-    return () => socket.removeEventListener('message', handleSocketMessage);
-  }, [
-    socket,
-    userName,
-    isAudioMuted,
-    isVideoMuted,
-    clientId,
-    broadcastMediaStatus,
-    handleNewUser,
-    handleUserLeft,
-    handleMediaStatus,
-    handleOffer,
-    handleAnswer,
-    handleCandidate,
-  ]);
+    const handleClose = () => {
+      if (!disconnectingRef.current) {
+        onLeave?.();
+      }
+    };
 
-  useEffect(() => {
-    const participantsList = Object.entries(remoteUserNames).map(([id, name]) => ({
-      id,
-      name: name || 'Участник',
-      audioEnabled: remoteMediaStatus[id]?.audioEnabled !== false,
-      videoEnabled: remoteMediaStatus[id]?.videoEnabled !== false,
-    }));
-    onParticipantsChange?.(participantsList);
-  }, [remoteUserNames, remoteMediaStatus, onParticipantsChange]);
+    socket.addEventListener('message', handleMessage);
+    socket.addEventListener('close', handleClose);
 
+    return () => {
+      socket.removeEventListener('message', handleMessage);
+      socket.removeEventListener('close', handleClose);
+    };
+  }, [socket, userName, sendMessage, initiateWebRTC, handleOffer, handleAnswer, handleCandidate, closePeerConnection, onLeave]);
+
+  /**
+   * Уведомляем родителя о локальном медиа
+   */
   useEffect(() => {
     onLocalMediaChange?.(!isAudioMuted, !isVideoMuted);
-    if (clientId && socket?.readyState === WebSocket.OPEN) {
-      broadcastMediaStatus({
+  }, [isAudioMuted, isVideoMuted, onLocalMediaChange]);
+
+  /**
+   * Переключение микрофона
+   */
+  const toggleAudio = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn('toggleAudio: Локальный поток не инициализирован');
+      return;
+    }
+
+    const audioTracks = stream.getAudioTracks();
+    if (audioTracks.length === 0) {
+      console.warn('toggleAudio: Нет аудио треков');
+      return;
+    }
+
+    // Получаем текущее состояние из первого трека
+    const currentEnabled = audioTracks[0].enabled;
+    const newEnabled = !currentEnabled;
+
+    // Переключаем состояние всех аудио треков
+    audioTracks.forEach((track) => {
+      track.enabled = newEnabled;
+      console.log(`Аудио трек ${track.id}: enabled = ${newEnabled}`);
+    });
+
+    // Обновляем состояние UI (muted = !enabled)
+    setIsAudioMuted(!newEnabled);
+    console.log(`toggleAudio: isAudioMuted = ${!newEnabled}`);
+  }, []);
+
+  /**
+   * Переключение камеры
+   */
+  const toggleVideo = useCallback(() => {
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn('toggleVideo: Локальный поток не инициализирован');
+      return;
+    }
+
+    const videoTracks = stream.getVideoTracks();
+    if (videoTracks.length === 0) {
+      console.warn('toggleVideo: Нет видео треков');
+      return;
+    }
+
+    // Получаем текущее состояние из первого трека
+    const currentEnabled = videoTracks[0].enabled;
+    const newEnabled = !currentEnabled;
+
+    // Переключаем состояние всех видео треков
+    videoTracks.forEach((track) => {
+      track.enabled = newEnabled;
+      console.log(`Видео трек ${track.id}: enabled = ${newEnabled}`);
+    });
+
+    // Обновляем состояние UI (muted = !enabled)
+    setIsVideoMuted(!newEnabled);
+    console.log(`toggleVideo: isVideoMuted = ${!newEnabled}`);
+  }, []);
+
+  /**
+   * Отправка статуса медиа на сервер при изменении (только после инициализации)
+   */
+  useEffect(() => {
+    // Отправляем статус только если медиа уже инициализированы и есть подключение
+    if (mediaInitializedRef.current && socketRef.current?.readyState === WebSocket.OPEN && clientIdRef.current) {
+      sendMessage({
+        type: 'media-status',
         audioEnabled: !isAudioMuted,
         videoEnabled: !isVideoMuted,
       });
     }
-  }, [isAudioMuted, isVideoMuted, clientId, broadcastMediaStatus, onLocalMediaChange, socket]);
+  }, [isAudioMuted, isVideoMuted, sendMessage]);
 
-  const toggleAudio = () => {
-    if (localStreamRef.current) {
-      const next = !isAudioMuted;
-      localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = next;
-      });
-      setIsAudioMuted(next);
-    }
-  };
-
-  const toggleVideo = () => {
-    if (localStreamRef.current) {
-      const next = !isVideoMuted;
-      localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.enabled = next;
-      });
-      setIsVideoMuted(next);
-    }
-  };
-
+  /**
+   * Выход из встречи
+   */
   const leaveMeeting = useCallback(() => {
     sendLeave();
-    Object.values(peerConnections.current).forEach((pc) => pc.close());
-    peerConnections.current = {};
+    Object.keys(peerConnectionsRef.current).forEach(closePeerConnection);
     setRemoteStreams({});
-    setRemoteMediaStatus({});
-    setRemoteUserNames({});
+    setParticipants({});
     onLeave?.();
-  }, [onLeave, sendLeave]);
+  }, [sendLeave, closePeerConnection, onLeave]);
 
+  /**
+   * beforeunload
+   */
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      sendLeave();
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+    const handler = () => sendLeave();
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
   }, [sendLeave]);
 
-  const participantIds = Array.from(
-    new Set([...Object.keys(remoteUserNames), ...Object.keys(remoteStreams)])
-  );
+  const participantIds = Object.keys(participants);
 
   return (
     <div className="video-call-container">
       <div className="video-grid">
+        {/* Локальное видео */}
         <div className="video-item">
-          <video ref={localVideoRef} autoPlay muted />
+          <video ref={localVideoRef} autoPlay muted playsInline />
           <div className="user-name-overlay">{userName || 'Вы'}</div>
           <div className="media-badges">
             <span className={`badge ${isAudioMuted ? 'muted' : ''}`}>
@@ -401,15 +577,16 @@ function VideoCall({
           </div>
         </div>
 
+        {/* Удалённые участники */}
         {participantIds.map((sessionId) => (
           <ParticipantTile
             key={sessionId}
             stream={remoteStreams[sessionId]}
-            mediaStatus={remoteMediaStatus[sessionId]}
-            userName={remoteUserNames[sessionId]}
+            participant={participants[sessionId]}
           />
         ))}
       </div>
+
       <div className="controls-row">
         <button className="danger" onClick={leaveMeeting}>
           <i className="fas fa-phone-slash" /> Покинуть встречу
@@ -419,7 +596,10 @@ function VideoCall({
   );
 }
 
-function ParticipantTile({ stream, mediaStatus, userName }) {
+/**
+ * Плитка участника
+ */
+function ParticipantTile({ stream, participant }) {
   const videoRef = useRef(null);
 
   useEffect(() => {
@@ -428,23 +608,29 @@ function ParticipantTile({ stream, mediaStatus, userName }) {
     }
   }, [stream]);
 
+  const userName = participant?.userName || 'Участник';
+  const audioEnabled = participant?.audioEnabled === true;
+  const videoEnabled = participant?.videoEnabled === true;
+
   return (
     <div className="video-item">
       {stream ? (
-        <video ref={videoRef} autoPlay muted={!mediaStatus?.audioEnabled} />
+        <video ref={videoRef} autoPlay playsInline />
       ) : (
-        <div className="video-placeholder">{(userName || 'Участник').charAt(0).toUpperCase()}</div>
+        <div className="video-placeholder">
+          {userName.charAt(0).toUpperCase()}
+        </div>
       )}
-      <div className="user-name-overlay">{userName || 'Пользователь'}</div>
+      <div className="user-name-overlay">{userName}</div>
       <div className="media-badges">
-        <span className={`badge ${mediaStatus?.audioEnabled === false ? 'muted' : ''}`}>
-          <i className={`fas ${mediaStatus?.audioEnabled === false ? 'fa-microphone-slash' : 'fa-microphone'}`} />
+        <span className={`badge ${!audioEnabled ? 'muted' : ''}`}>
+          <i className={`fas ${!audioEnabled ? 'fa-microphone-slash' : 'fa-microphone'}`} />
         </span>
-        <span className={`badge ${mediaStatus?.videoEnabled === false ? 'muted' : ''}`}>
-          <i className={`fas ${mediaStatus?.videoEnabled === false ? 'fa-video-slash' : 'fa-video'}`} />
+        <span className={`badge ${!videoEnabled ? 'muted' : ''}`}>
+          <i className={`fas ${!videoEnabled ? 'fa-video-slash' : 'fa-video'}`} />
         </span>
       </div>
-      {mediaStatus?.videoEnabled === false && (
+      {!videoEnabled && (
         <div className="video-muted-overlay">
           <i className="fas fa-video-slash" />
         </div>

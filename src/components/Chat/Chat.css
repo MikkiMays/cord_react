@@ -2,33 +2,72 @@
   display: flex;
   flex-direction: column;
   height: 100%;
-  gap: 10px;
-  position: relative;
+  min-height: 0;
+  overflow: hidden;
 }
 
-.messages {
-  flex: 0;
-  grid-template-columns: 1fr auto;
-  gap: 8px;
+.chat-header {
+  display: flex;
   align-items: center;
-  position: sticky;
-  bottom: 0;
-  padding: 10px 8px 0;
-  margin-left: -8px;
-  margin-right: -8px;
-  background: linear-gradient(180deg, rgba(15, 17, 23, 0.85) 0%, rgba(15, 17, 23, 1) 35%, #0f1117 100%);
-  backdrop-filter: blur(6px);
+  justify-content: space-between;
+  flex-shrink: 0;
+  margin-bottom: 12px;
+}
+
+.chat-header h4 {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 4px 0 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 200px;
+}
+
+/* Контейнер сообщений - фиксированный с прокруткой */
+.messages {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(27, 31, 39, 0.9), rgba(18, 20, 26, 0.95));
+  min-height: 0;
+}
+
+/* Скроллбар */
+.messages::-webkit-scrollbar {
+  width: 6px;
+}
+
+.messages::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.25);
 }
 
 .message {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .message .sender {
   color: var(--muted);
-  font-size: 12px;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .bubble {
@@ -36,45 +75,73 @@
   border-radius: 12px;
   padding: 10px 12px;
   border: 1px solid var(--border);
+  max-width: 90%;
+  line-height: 1.45;
+  word-wrap: break-word;
+  word-break: break-word;
+}
+
+.message.self {
+  align-items: flex-end;
 }
 
 .message.self .bubble {
   background: rgba(90, 141, 238, 0.16);
   border-color: rgba(90, 141, 238, 0.4);
-  align-self: flex-end;
 }
 
+/* Форма ввода - всегда внизу */
 .message-input {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 8px;
-  align-items: center;
-  position: sticky;
-  bottom: 0;
-  padding: 10px 8px 0;
-  margin-left: -8px;
-  margin-right: -8px;
-  background: linear-gradient(180deg, rgba(15, 17, 23, 0.85) 0%, rgba(15, 17, 23, 1) 35%, #0f1117 100%);
-  backdrop-filter: blur(6px);
+  align-items: flex-end;
+  background: #0f1117;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px;
+  margin-top: 12px;
+  flex-shrink: 0;
 }
 
 .message-input textarea {
   width: 100%;
-  min-height: 56px;
-  max-height: 120px;
-  resize: none;  /* Запрещаем изменение размера поля */
-  background: #0f1117;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  min-height: 40px;
+  max-height: 100px;
+  resize: none;
+  background: transparent;
+  border: none;
   color: #f7f9fb;
-  padding: 10px 12px;
+  padding: 8px 10px;
   overflow-y: auto;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.message-input textarea:focus {
+  outline: none;
+}
+
+.message-input textarea::placeholder {
+  color: var(--muted);
 }
 
 .message-input button {
   background: linear-gradient(135deg, #5a8dee, #5dd39e);
   color: #0b0c10;
-  padding: 12px 14px;
-  border-radius: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
   font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  transition: opacity 0.15s;
+}
+
+.message-input button:hover {
+  opacity: 0.9;
+}
+
+.message-input button:active {
+  opacity: 0.8;
 }

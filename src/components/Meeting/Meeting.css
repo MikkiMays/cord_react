@@ -5,6 +5,7 @@
   display: flex;
   flex-direction: column;
   gap: 20px;
+  height: calc(100vh - 56px);
 }
 
 .meeting-header {
@@ -15,6 +16,7 @@
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 16px 20px;
+  flex-shrink: 0;
 }
 
 .eyebrow {
@@ -43,10 +45,18 @@
   font-weight: 600;
 }
 
+.pill.light {
+  padding: 6px 10px;
+  background: rgba(90, 141, 238, 0.14);
+  font-size: 13px;
+}
+
 .meeting-layout {
   display: grid;
   grid-template-columns: 1.7fr 0.9fr;
   gap: 16px;
+  flex: 1;
+  min-height: 0;
 }
 
 .stage {
@@ -54,12 +64,15 @@
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 12px;
+  overflow: hidden;
 }
 
 .side-panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .panel-block {
@@ -67,12 +80,20 @@
   border: 1px solid var(--border);
   border-radius: 18px;
   padding: 14px;
-  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panel-block.participants {
+  flex-shrink: 0;
+  max-height: 280px;
 }
 
 .panel-title {
   font-weight: 700;
   margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .panel-block.participants ul {
@@ -82,6 +103,8 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  overflow-y: auto;
+  flex: 1;
 }
 
 .panel-block.participants li {
@@ -89,6 +112,7 @@
   align-items: center;
   gap: 10px;
   color: #e8ecf5;
+  flex-shrink: 0;
 }
 
 .presence-dot {
@@ -97,10 +121,64 @@
   background: #5dd39e;
   border-radius: 50%;
   box-shadow: 0 0 0 4px rgba(93, 211, 158, 0.12);
+  flex-shrink: 0;
+}
+
+/* Иконки медиа в списке участников */
+.panel-block.participants .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(93, 211, 158, 0.15);
+  color: #5dd39e;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.panel-block.participants .badge:first-of-type {
+  margin-left: auto;
+}
+
+.panel-block.participants .badge:last-of-type {
+  margin-left: 4px;
+}
+
+/* Перечёркнутые иконки (muted) */
+.panel-block.participants .badge.muted {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.panel-block.participants .badge i {
+  font-size: 11px;
+}
+
+/* Блок чата - фиксированная высота */
+.chat-block {
+  flex: 1;
+  min-height: 200px;
+  overflow: hidden;
+}
+
+.chat-block .chat-container {
+  height: 100%;
 }
 
 @media (max-width: 1024px) {
   .meeting-layout {
     grid-template-columns: 1fr;
+  }
+  
+  .meeting-shell {
+    height: auto;
+    min-height: calc(100vh - 56px);
+  }
+  
+  .chat-block {
+    min-height: 300px;
+    max-height: 400px;
   }
 }

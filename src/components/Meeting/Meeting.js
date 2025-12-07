@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
 import VideoCall from '../VideoCall/VideoCall';
 import JoinMeeting from './JoinMeeting/JoinMeeting';
+import Chat from '../Chat/Chat';
 import './Meeting.css';
 import { WebSocketProvider } from '../../contexts/WebSocketContext';
 import { fetchMeeting, joinMeeting } from '../../services/api';
@@ -98,92 +99,107 @@ function Meeting() {
     setConnectionNonce((prev) => prev + 1);
   };
 
-  return (
+  // Контент до входа во встречу (без WebSocket)
+  const preJoinContent = (
+    <div className="meeting-shell">
+      <header className="meeting-header">
+        <div>
+          <p className="eyebrow">ID встречи</p>
+          <h2>{meetingId}</h2>
+          <p className="muted">{meetingTitle || 'Онлайн-созвон через cord'}</p>
+        </div>
+        <div className="pill">0 участников</div>
+      </header>
+
+      {meetingUnavailable ? (
+        <div className="join-card">
+          <div className="join-form">
+            <p className="eyebrow">Встреча недоступна</p>
+            <h3>Не удалось открыть встречу</h3>
+            <p className="muted">{error || 'Проверьте ссылку и попробуйте снова.'}</p>
+          </div>
+        </div>
+      ) : (
+        <JoinMeeting
+          defaultName={userName}
+          onJoin={handleJoin}
+          loading={loadingInfo || joining}
+          error={error}
+          disabled={meetingUnavailable}
+        />
+      )}
+    </div>
+  );
+
+  // Контент после входа во встречу (с WebSocket)
+  const meetingContent = (
     <WebSocketProvider key={`${meetingId}-${connectionNonce}`} meetingId={meetingId}>
       <div className="meeting-shell">
-        {/* Шапка встречи с ID, названием и счетчиком участников */}
         <header className="meeting-header">
           <div>
             <p className="eyebrow">ID встречи</p>
             <h2>{meetingId}</h2>
             <p className="muted">{meetingTitle || 'Онлайн-созвон через cord'}</p>
           </div>
-          <div className="pill">{joined ? participants.length + 1 : 0} участников</div>
+          <div className="pill">{participants.length + 1} участников</div>
         </header>
 
-        {!joined ? (
-          meetingUnavailable ? (
-            // Сообщение о недоступности встречи
-            <div className="join-card">
-              <div className="join-form">
-                <p className="eyebrow">Встреча недоступна</p>
-                <h3>Не удалось открыть встречу</h3>
-                <p className="muted">{error || 'Проверьте ссылку и попробуйте снова.'}</p>
-              </div>
-            </div>
-          ) : (
-            // Экран пред-входа во встречу
-            <JoinMeeting
-              defaultName={userName}
-              onJoin={handleJoin}
-              loading={loadingInfo || joining}
-              error={error}
-              disabled={meetingUnavailable}
+        <div className="meeting-layout">
+          <section className="stage">
+            <VideoCall
+              userName={userName}
+              initialAudioEnabled={localAudioEnabled}
+              initialVideoEnabled={localVideoEnabled}
+              onParticipantsChange={handleParticipantsChange}
+              onLeave={handleLeave}
+              onLocalMediaChange={(audioOn, videoOn) => {
+                setLocalAudioEnabled(audioOn);
+                setLocalVideoEnabled(videoOn);
+              }}
             />
-          )
-        ) : (
-          // Основной экран встречи: видео + список участников
-          <div className="meeting-layout">
-            <section className="stage">
-              <VideoCall
-                userName={userName}
-                initialAudioEnabled={localAudioEnabled}
-                initialVideoEnabled={localVideoEnabled}
-                onParticipantsChange={handleParticipantsChange}
-                onLeave={handleLeave}
-                onLocalMediaChange={(audioOn, videoOn) => {
-                  setLocalAudioEnabled(audioOn);
-                  setLocalVideoEnabled(videoOn);
-                }}
-              />
-            </section>
-            <aside className="side-panel">
-              <div className="panel-block participants">
-                <div className="panel-title">Участники</div>
-                <p className="muted small">
-                  Участники появляются сразу после сигнала, даже если видео ещё подключается.
-                </p>
-                <ul>
-                  <li key="self">
+          </section>
+          <aside className="side-panel">
+            <div className="panel-block participants">
+              <div className="panel-title">Участники</div>
+              <p className="muted small">
+                Участники появляются сразу после сигнала, даже если видео ещё подключается.
+              </p>
+              <ul>
+                <li key="self">
+                  <span className="presence-dot" />
+                  {userName || 'Вы'}
+                  <span className={`badge ${localAudioEnabled ? '' : 'muted'}`}>
+                    <i className={`fas ${localAudioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
+                  </span>
+                  <span className={`badge ${localVideoEnabled ? '' : 'muted'}`}>
+                    <i className={`fas ${localVideoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
+                  </span>
+                </li>
+                {participants.map((p) => (
+                  <li key={p.id}>
                     <span className="presence-dot" />
-                    {userName || 'Вы'}
-                    <span className={`badge ${localAudioEnabled ? '' : 'muted'}`}>
-                      <i className={`fas ${localAudioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
+                    {p.name || 'Участник'}
+                    <span className={`badge ${p.audioEnabled ? '' : 'muted'}`}>
+                      <i className={`fas ${p.audioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
                     </span>
-                    <span className={`badge ${localVideoEnabled ? '' : 'muted'}`}>
-                      <i className={`fas ${localVideoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
+                    <span className={`badge ${p.videoEnabled ? '' : 'muted'}`}>
+                      <i className={`fas ${p.videoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
                     </span>
                   </li>
-                  {participants.map((p) => (
-                    <li key={p.id}>
-                      <span className="presence-dot" />
-                      {p.name || 'Участник'}
-                      <span className={`badge ${p.audioEnabled ? '' : 'muted'}`}>
-                        <i className={`fas ${p.audioEnabled ? 'fa-microphone' : 'fa-microphone-slash'}`} />
-                      </span>
-                      <span className={`badge ${p.videoEnabled ? '' : 'muted'}`}>
-                        <i className={`fas ${p.videoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            </aside>
-          </div>
-        )}
+                ))}
+              </ul>
+            </div>
+
+            <div className="panel-block chat-block">
+              <Chat userName={userName} meetingId={meetingId} />
+            </div>
+          </aside>
+        </div>
       </div>
     </WebSocketProvider>
   );
+
+  return joined ? meetingContent : preJoinContent;
 }
 
 export default Meeting;

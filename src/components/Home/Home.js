@@ -19,10 +19,10 @@ function Home() {
     setLoading(true);
     try {
       const meeting = await createMeeting({ hostName: displayName });
-      goToMeeting(meeting.id || meeting.meetingId, { autoJoin: true });
+      goToMeeting(meeting.id || meeting.meetingId, { autoJoin: false });
     } catch (error) {
       console.warn('Не удалось вызвать API создания встречи, используем локальный ID', error);
-      goToMeeting(uuidv4(), { autoJoin: true });
+      goToMeeting(uuidv4(), { autoJoin: false });
     } finally {
       setLoading(false);
     }
