@@ -1,6 +1,5 @@
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useLocation, useParams } from 'react-router-dom';
-import Chat from '../Chat/Chat';
 import VideoCall from '../VideoCall/VideoCall';
 import JoinMeeting from './JoinMeeting/JoinMeeting';
 import './Meeting.css';
@@ -14,7 +13,7 @@ function Meeting() {
   const autoJoin = Boolean(location.state?.autoJoin);
   const [joined, setJoined] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
-  const [participants, setParticipants] = useState([]);  // список участников (кроме текущего пользователя)
+  const [participants, setParticipants] = useState([]); // список участников (кроме текущего пользователя)
   const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
   const [localVideoEnabled, setLocalVideoEnabled] = useState(true);
   const [loadingInfo, setLoadingInfo] = useState(true);
@@ -22,6 +21,7 @@ function Meeting() {
   const [meetingUnavailable, setMeetingUnavailable] = useState(false);
   const [joining, setJoining] = useState(false);
   const autoJoinAttemptedRef = useRef(false);
+  const [connectionNonce, setConnectionNonce] = useState(0);
 
   useEffect(() => {
     // Загрузка информации о встрече (название и проверка доступности)
@@ -43,23 +43,8 @@ function Meeting() {
     loadMeeting();
   }, [meetingId]);
 
-  useEffect(() => {
-    // Автоподключение к новой встрече, если указано и имя уже введено
-    if (
-      !autoJoinAttemptedRef.current &&
-      autoJoin &&
-      !loadingInfo &&
-      !joined &&
-      !meetingUnavailable &&
-      userName?.trim()
-    ) {
-      autoJoinAttemptedRef.current = true;
-      handleJoin(userName.trim(), true, true);
-    }
-  }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName]);
-
   // Обработчик нажатия "Войти в встречу"
-  const handleJoin = (name, initialAudioOn = true, initialVideoOn = true) => {
+  const handleJoin = useCallback((name, initialAudioOn = true, initialVideoOn = true) => {
     const trimmedName = name.trim();
     if (!trimmedName) {
       setError('Введите имя, чтобы коллеги знали, кто присоединился');
@@ -84,15 +69,37 @@ function Meeting() {
         setError('Подключение отклонено: встреча не найдена или недоступна.');
       })
       .finally(() => setJoining(false));
-  };
+  }, [meetingId, meetingUnavailable]);
 
-  // Обработчик изменения списка участников из компонента VideoCall
+  useEffect(() => {
+    // Автоподключение к новой встрече, если указано и имя уже введено
+    if (
+      !autoJoinAttemptedRef.current &&
+      autoJoin &&
+      !loadingInfo &&
+      !joined &&
+      !meetingUnavailable &&
+      userName?.trim()
+    ) {
+      autoJoinAttemptedRef.current = true;
+      handleJoin(userName.trim(), true, true);
+    }
+  }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName, handleJoin]);
+
   const handleParticipantsChange = (list) => {
     setParticipants(list || []);
   };
 
+  const handleLeave = () => {
+    setJoined(false);
+    setParticipants([]);
+    setLocalAudioEnabled(true);
+    setLocalVideoEnabled(true);
+    setConnectionNonce((prev) => prev + 1);
+  };
+
   return (
-    <WebSocketProvider meetingId={meetingId}>
+    <WebSocketProvider key={`${meetingId}-${connectionNonce}`} meetingId={meetingId}>
       <div className="meeting-shell">
         {/* Шапка встречи с ID, названием и счетчиком участников */}
         <header className="meeting-header">
@@ -101,7 +108,7 @@ function Meeting() {
             <h2>{meetingId}</h2>
             <p className="muted">{meetingTitle || 'Онлайн-созвон через cord'}</p>
           </div>
-          <div className="pill">{(participants.length + 1) || 1} участников</div>
+          <div className="pill">{joined ? participants.length + 1 : 0} участников</div>
         </header>
 
         {!joined ? (
@@ -125,7 +132,7 @@ function Meeting() {
             />
           )
         ) : (
-          // Основной экран встречи: видео + чат + список участников
+          // Основной экран встречи: видео + список участников
           <div className="meeting-layout">
             <section className="stage">
               <VideoCall
@@ -133,6 +140,7 @@ function Meeting() {
                 initialAudioEnabled={localAudioEnabled}
                 initialVideoEnabled={localVideoEnabled}
                 onParticipantsChange={handleParticipantsChange}
+                onLeave={handleLeave}
                 onLocalMediaChange={(audioOn, videoOn) => {
                   setLocalAudioEnabled(audioOn);
                   setLocalVideoEnabled(videoOn);
@@ -140,14 +148,12 @@ function Meeting() {
               />
             </section>
             <aside className="side-panel">
-              <div className="panel-block">
-                <div className="panel-title">Чат</div>
-                <Chat userName={userName} meetingId={meetingId} />
-              </div>
               <div className="panel-block participants">
                 <div className="panel-title">Участники</div>
+                <p className="muted small">
+                  Участники появляются сразу после сигнала, даже если видео ещё подключается.
+                </p>
                 <ul>
-                  {/* Текущий пользователь */}
                   <li key="self">
                     <span className="presence-dot" />
                     {userName || 'Вы'}
@@ -158,7 +164,6 @@ function Meeting() {
                       <i className={`fas ${localVideoEnabled ? 'fa-video' : 'fa-video-slash'}`} />
                     </span>
                   </li>
-                  {/* Прочие участники */}
                   {participants.map((p) => (
                     <li key={p.id}>
                       <span className="presence-dot" />
