@@ -33,7 +33,7 @@ function Meeting() {
         setMeetingUnavailable(false);
         setError('');
       } catch (err) {
-        console.warn('Не удалось получить данные встречи, используем дефолтное значение', err);
+        console.warn('Failed to fetch meeting data, using default value', err);
         setMeetingTitle('Встреча недоступна');
         setMeetingUnavailable(true);
         setError('Встреча не найдена или её срок истёк. Проверьте ссылку и попробуйте снова.');
@@ -66,7 +66,7 @@ function Meeting() {
         setJoined(true);
       })
       .catch((err) => {
-        console.warn('Не удалось присоединиться к встрече', err);
+        console.warn('Failed to join meeting', err);
         setError('Подключение отклонено: встреча не найдена или недоступна.');
       })
       .finally(() => setJoining(false));

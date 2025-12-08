@@ -15,20 +15,20 @@ export const WebSocketProvider = ({ children, meetingId }) => {
     if (!meetingId) return undefined;
 
     const url = `${WS_BASE}/webrtc-signal?meetingId=${encodeURIComponent(meetingId)}`;
-    console.log('Подключение к WebSocket:', url);
+    console.log('Connecting to WebSocket:', url);
     const connection = new WebSocket(url);
     setSocket(connection);
 
     connection.onopen = () => {
-      console.log('Соединение с сервером установлено');
+      console.log('Server connection established');
     };
 
     connection.onerror = (error) => {
-      console.error('Ошибка WebSocket:', error);
+      console.error('WebSocket error:', error);
     };
 
     connection.onclose = () => {
-      console.log('Соединение с сервером закрыто');
+      console.log('Server connection closed');
     };
 
     return () => {

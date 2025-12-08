@@ -68,11 +68,11 @@ function VideoCall({
    */
   const createPeerConnection = useCallback((sessionId) => {
     if (peerConnectionsRef.current[sessionId]) {
-      console.log(`PeerConnection для ${sessionId} уже существует`);
+      console.log(`PeerConnection for ${sessionId} already exists`);
       return peerConnectionsRef.current[sessionId];
     }
 
-    console.log(`Создаём PeerConnection для ${sessionId}`);
+    console.log(`Creating PeerConnection for ${sessionId}`);
 
     const pc = new RTCPeerConnection({
       iceServers: [
@@ -84,7 +84,7 @@ function VideoCall({
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
-        console.log(`Отправляем ICE candidate для ${sessionId}`);
+        console.log(`Sending ICE candidate for ${sessionId}`);
         sendMessage({
           type: 'candidate',
           candidate: event.candidate,
@@ -94,7 +94,7 @@ function VideoCall({
     };
 
     pc.ontrack = (event) => {
-      console.log(`Получен трек от ${sessionId}:`, event.track.kind);
+      console.log(`Received track from ${sessionId}:`, event.track.kind);
       if (event.streams && event.streams[0]) {
         setRemoteStreams((prev) => ({
           ...prev,
@@ -104,25 +104,25 @@ function VideoCall({
     };
 
     pc.oniceconnectionstatechange = () => {
-      console.log(`ICE состояние ${sessionId}: ${pc.iceConnectionState}`);
+      console.log(`ICE state ${sessionId}: ${pc.iceConnectionState}`);
       if (pc.iceConnectionState === 'failed' || pc.iceConnectionState === 'disconnected') {
-        console.warn(`ICE соединение с ${sessionId} разорвано`);
+        console.warn(`ICE connection with ${sessionId} disconnected`);
       }
     };
 
     pc.onconnectionstatechange = () => {
-      console.log(`Состояние соединения ${sessionId}: ${pc.connectionState}`);
+      console.log(`Connection state ${sessionId}: ${pc.connectionState}`);
     };
 
     // Добавляем локальные треки если они есть
     if (localStreamRef.current) {
       const tracks = localStreamRef.current.getTracks();
-      console.log(`Добавляем ${tracks.length} локальных треков к PeerConnection ${sessionId}`);
+      console.log(`Adding ${tracks.length} local tracks to PeerConnection ${sessionId}`);
       tracks.forEach((track) => {
         pc.addTrack(track, localStreamRef.current);
       });
     } else {
-      console.warn(`Локальный поток ещё не готов при создании PeerConnection для ${sessionId}`);
+      console.warn(`Local stream not ready when creating PeerConnection for ${sessionId}`);
     }
 
     peerConnectionsRef.current[sessionId] = pc;
@@ -152,7 +152,7 @@ function VideoCall({
     try {
       // Ждём немного, чтобы медиа успело инициализироваться
       if (!localStreamRef.current) {
-        console.log(`Ожидаем инициализации медиа перед созданием offer для ${sessionId}...`);
+        console.log(`Waiting for media initialization before creating offer for ${sessionId}...`);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
@@ -160,7 +160,7 @@ function VideoCall({
       
       // Убеждаемся, что треки добавлены
       if (localStreamRef.current && pc.getSenders().length === 0) {
-        console.log(`Добавляем треки перед созданием offer для ${sessionId}`);
+        console.log(`Adding tracks before creating offer for ${sessionId}`);
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current);
         });
@@ -176,9 +176,9 @@ function VideoCall({
         offer: pc.localDescription,
         receiver: sessionId,
       });
-      console.log(`Отправлен offer для ${sessionId}`);
+      console.log(`Sent offer for ${sessionId}`);
     } catch (error) {
-      console.error(`Ошибка создания offer для ${sessionId}:`, error);
+      console.error(`Error creating offer for ${sessionId}:`, error);
     }
   }, [createPeerConnection, sendMessage]);
 
@@ -187,12 +187,12 @@ function VideoCall({
    */
   const handleOffer = useCallback(async (offer, senderId) => {
     try {
-      console.log(`Получен offer от ${senderId}`);
+      console.log(`Received offer from ${senderId}`);
       const pc = createPeerConnection(senderId);
       
       // Убеждаемся, что треки добавлены перед ответом
       if (localStreamRef.current && pc.getSenders().length === 0) {
-        console.log(`Добавляем треки перед созданием answer для ${senderId}`);
+        console.log(`Adding tracks before creating answer for ${senderId}`);
         localStreamRef.current.getTracks().forEach((track) => {
           pc.addTrack(track, localStreamRef.current);
         });
@@ -206,9 +206,9 @@ function VideoCall({
         answer: pc.localDescription,
         receiver: senderId,
       });
-      console.log(`Отправлен answer для ${senderId}`);
+      console.log(`Sent answer for ${senderId}`);
     } catch (error) {
-      console.error(`Ошибка обработки offer от ${senderId}:`, error);
+      console.error(`Error handling offer from ${senderId}:`, error);
     }
   }, [createPeerConnection, sendMessage]);
 
@@ -217,20 +217,20 @@ function VideoCall({
    */
   const handleAnswer = useCallback(async (answer, senderId) => {
     try {
-      console.log(`Получен answer от ${senderId}`);
+      console.log(`Received answer from ${senderId}`);
       const pc = peerConnectionsRef.current[senderId];
       if (!pc) {
-        console.warn(`PeerConnection для ${senderId} не найден`);
+        console.warn(`PeerConnection for ${senderId} not found`);
         return;
       }
       if (pc.signalingState !== 'stable') {
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        console.log(`Answer обработан для ${senderId}, состояние: ${pc.signalingState}`);
+        console.log(`Answer processed for ${senderId}, state: ${pc.signalingState}`);
       } else {
-        console.log(`Пропускаем answer для ${senderId}, соединение уже stable`);
+        console.log(`Skipping answer for ${senderId}, connection already stable`);
       }
     } catch (error) {
-      console.error(`Ошибка обработки answer от ${senderId}:`, error);
+      console.error(`Error handling answer from ${senderId}:`, error);
     }
   }, []);
 
@@ -241,15 +241,15 @@ function VideoCall({
     try {
       const pc = peerConnectionsRef.current[senderId];
       if (!pc) {
-        console.warn(`PeerConnection для ${senderId} не найден при обработке ICE candidate`);
+        console.warn(`PeerConnection for ${senderId} not found while handling ICE candidate`);
         return;
       }
       await pc.addIceCandidate(new RTCIceCandidate(candidate));
-      console.log(`ICE candidate добавлен для ${senderId}`);
+      console.log(`ICE candidate added for ${senderId}`);
     } catch (error) {
       // Игнорируем ошибки ICE candidate если соединение ещё не готово
       if (error.name !== 'InvalidStateError') {
-        console.error(`Ошибка ICE candidate для ${senderId}:`, error);
+        console.error(`ICE candidate error for ${senderId}:`, error);
       }
     }
   }, []);
@@ -262,7 +262,7 @@ function VideoCall({
 
     let mounted = true;
 
-    console.log('Запрашиваем доступ к камере и микрофону...');
+    console.log('Requesting camera and microphone access...');
 
     navigator.mediaDevices
       .getUserMedia({ video: true, audio: true })
@@ -272,7 +272,7 @@ function VideoCall({
           return;
         }
 
-        console.log('Медиа получено:', stream.getTracks().map(t => `${t.kind}:${t.id}`));
+        console.log('Media obtained:', stream.getTracks().map(t => `${t.kind}:${t.id}`));
 
         localStreamRef.current = stream;
         if (localVideoRef.current) {
@@ -282,11 +282,11 @@ function VideoCall({
         // Применяем начальные настройки
         stream.getAudioTracks().forEach((t) => { 
           t.enabled = initialAudioEnabled;
-          console.log(`Аудио трек ${t.id}: enabled = ${initialAudioEnabled}`);
+          console.log(`Audio track ${t.id}: enabled = ${initialAudioEnabled}`);
         });
         stream.getVideoTracks().forEach((t) => { 
           t.enabled = initialVideoEnabled;
-          console.log(`Видео трек ${t.id}: enabled = ${initialVideoEnabled}`);
+          console.log(`Video track ${t.id}: enabled = ${initialVideoEnabled}`);
         });
         setIsAudioMuted(!initialAudioEnabled);
         setIsVideoMuted(!initialVideoEnabled);
@@ -298,7 +298,7 @@ function VideoCall({
         Object.entries(peerConnectionsRef.current).forEach(([sessionId, pc]) => {
           const senders = pc.getSenders();
           if (senders.length === 0) {
-            console.log(`Добавляем треки к существующему PeerConnection ${sessionId}`);
+            console.log(`Adding tracks to existing PeerConnection ${sessionId}`);
             stream.getTracks().forEach((track) => {
               pc.addTrack(track, stream);
             });
@@ -315,7 +315,7 @@ function VideoCall({
         }
       })
       .catch((error) => {
-        console.error('Ошибка получения медиа:', error);
+        console.error('Error obtaining media:', error);
         alert('Не удалось получить доступ к камере/микрофону. Проверьте разрешения браузера.');
       });
 
@@ -355,14 +355,14 @@ function VideoCall({
       switch (type) {
         case 'your-id': {
           const myId = data.sessionId;
-          console.log('Мой ID:', myId);
+          console.log('My ID:', myId);
           clientIdRef.current = myId;
 
           // Отправляем set-name один раз
           if (!nameSentRef.current) {
             nameSentRef.current = true;
             sendMessage({ type: 'set-name', name: userName });
-            console.log('Отправлено set-name:', userName);
+            console.log('Sent set-name:', userName);
           }
           break;
         }
@@ -371,7 +371,7 @@ function VideoCall({
           const items = data.items || [];
           const myId = clientIdRef.current;
 
-          console.log('Получен список participants:', items.length, 'мой ID:', myId);
+          console.log('Received participants list:', items.length, 'my ID:', myId);
 
           // Фильтруем себя и строим map
           const map = {};
@@ -386,13 +386,13 @@ function VideoCall({
           });
 
           setParticipants(map);
-          console.log('Участников (без себя):', Object.keys(map).length);
+          console.log('Participants (excluding self):', Object.keys(map).length);
           break;
         }
 
         case 'new-user': {
           if (data.sessionId !== clientIdRef.current) {
-            console.log('Новый участник, инициируем WebRTC:', data.sessionId);
+            console.log('New participant, initiating WebRTC:', data.sessionId);
             await initiateWebRTC(data.sessionId);
           }
           break;
@@ -400,7 +400,7 @@ function VideoCall({
 
         case 'user-left': {
           const leftId = data.sessionId;
-          console.log('Участник вышел:', leftId);
+          console.log('Participant left:', leftId);
           closePeerConnection(leftId);
           setParticipants((prev) => {
             const updated = { ...prev };
@@ -455,13 +455,13 @@ function VideoCall({
   const toggleAudio = useCallback(() => {
     const stream = localStreamRef.current;
     if (!stream) {
-      console.warn('toggleAudio: Локальный поток не инициализирован');
+      console.warn('toggleAudio: Local stream not initialized');
       return;
     }
 
     const audioTracks = stream.getAudioTracks();
     if (audioTracks.length === 0) {
-      console.warn('toggleAudio: Нет аудио треков');
+      console.warn('toggleAudio: No audio tracks');
       return;
     }
 
@@ -472,7 +472,7 @@ function VideoCall({
     // Переключаем состояние всех аудио треков
     audioTracks.forEach((track) => {
       track.enabled = newEnabled;
-      console.log(`Аудио трек ${track.id}: enabled = ${newEnabled}`);
+      console.log(`Audio track ${track.id}: enabled = ${newEnabled}`);
     });
 
     // Обновляем состояние UI (muted = !enabled)
@@ -486,13 +486,13 @@ function VideoCall({
   const toggleVideo = useCallback(() => {
     const stream = localStreamRef.current;
     if (!stream) {
-      console.warn('toggleVideo: Локальный поток не инициализирован');
+      console.warn('toggleVideo: Local stream not initialized');
       return;
     }
 
     const videoTracks = stream.getVideoTracks();
     if (videoTracks.length === 0) {
-      console.warn('toggleVideo: Нет видео треков');
+      console.warn('toggleVideo: No video tracks');
       return;
     }
 
@@ -503,7 +503,7 @@ function VideoCall({
     // Переключаем состояние всех видео треков
     videoTracks.forEach((track) => {
       track.enabled = newEnabled;
-      console.log(`Видео трек ${track.id}: enabled = ${newEnabled}`);
+      console.log(`Video track ${track.id}: enabled = ${newEnabled}`);
     });
 
     // Обновляем состояние UI (muted = !enabled)

@@ -47,7 +47,7 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
       }
       setMediaError('');
     } catch (err) {
-      console.error('Ошибка получения медиа для превью:', err);
+      console.error('Error obtaining media for preview:', err);
       setMediaError('Необходимо предоставить доступ к камере и микрофону для участия в видеовстрече.');
       setMediaRequested(false);
     }

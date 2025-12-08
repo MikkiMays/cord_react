@@ -21,7 +21,7 @@ function Home() {
       const meeting = await createMeeting({ hostName: displayName });
       goToMeeting(meeting.id || meeting.meetingId, { autoJoin: false });
     } catch (error) {
-      console.warn('Не удалось вызвать API создания встречи, используем локальный ID', error);
+      console.warn('Failed to call meeting creation API, using local ID', error);
       goToMeeting(uuidv4(), { autoJoin: false });
     } finally {
       setLoading(false);
