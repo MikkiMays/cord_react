@@ -102,6 +102,23 @@
   border-radius: 10px;
 }
 
+.media-warning {
+  color: #ffd699;
+  background: rgba(255, 170, 40, 0.12);
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 170, 40, 0.35);
+  border-radius: 10px;
+  font-size: 0.9em;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.media-warning i {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
 @media (max-width: 900px) {
   .join-card {
     grid-template-columns: 1fr;

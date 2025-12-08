@@ -255,12 +255,33 @@ function VideoCall({
   }, []);
 
   /**
+   * Проверяет,  доступен ли API mediaDevices (требует HTTPS или localhost)
+   */
+  const isMediaDevicesSupported = useCallback(() => {
+    return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+  }, []);
+
+  /**
    * Инициализация медиа
    */
   useEffect(() => {
     if (!socket) return;
 
     let mounted = true;
+
+    // Проверяем поддержку mediaDevices (требует HTTPS или localhost)
+    if (!isMediaDevicesSupported()) {
+      console.warn('mediaDevices API unavailable. Site is running on HTTP, not HTTPS.');
+      console.warn('Camera/microphone requires HTTPS connection or localhost.');
+      // Продолжаем работу без медиа - участник сможет хотя бы видеть/слышать других
+      setIsAudioMuted(true);
+      setIsVideoMuted(true);
+      return () => {
+        mounted = false;
+        sendLeave();
+        Object.keys(peerConnectionsRef.current).forEach(closePeerConnection);
+      };
+    }
 
     console.log('Requesting camera and microphone access...');
 
@@ -316,7 +337,9 @@ function VideoCall({
       })
       .catch((error) => {
         console.error('Error obtaining media:', error);
-        alert('Не удалось получить доступ к камере/микрофону. Проверьте разрешения браузера.');
+        // Не блокируем вход - просто отключаем медиа
+        setIsAudioMuted(true);
+        setIsVideoMuted(true);
       });
 
     return () => {
@@ -329,7 +352,7 @@ function VideoCall({
       mediaInitializedRef.current = false;
       Object.keys(peerConnectionsRef.current).forEach(closePeerConnection);
     };
-  }, [socket, initialAudioEnabled, initialVideoEnabled, sendLeave, closePeerConnection, sendMessage]);
+  }, [socket, initialAudioEnabled, initialVideoEnabled, sendLeave, closePeerConnection, sendMessage, isMediaDevicesSupported]);
 
   /**
    * Обработка WebSocket сообщений
@@ -442,6 +465,19 @@ function VideoCall({
     };
   }, [socket, userName, sendMessage, initiateWebRTC, handleOffer, handleAnswer, handleCandidate, closePeerConnection, onLeave]);
 
+   /**
+   * Передаём список участников в родительский компонент
+   */
+   useEffect(() => {
+    const list = Object.entries(participants).map(([id, data]) => ({
+      id,
+      name: data.userName || 'Участник',
+      audioEnabled: data.audioEnabled,
+      videoEnabled: data.videoEnabled,
+    }));
+    onParticipantsChange?.(list);
+  }, [participants, onParticipantsChange]);
+  
   /**
    * Уведомляем родителя о локальном медиа
    */

@@ -1,14 +1,33 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './JoinMeeting.css';
 
+/**
+ * Проверяет, доступен ли API mediaDevices (требует HTTPS или localhost)
+ */
+function isMediaDevicesSupported() {
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+
 function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = false }) {
   const [userName, setUserName] = useState(defaultName);
   const [isAudioOn, setIsAudioOn] = useState(true);
   const [isVideoOn, setIsVideoOn] = useState(true);
   const [mediaRequested, setMediaRequested] = useState(false);
   const [mediaError, setMediaError] = useState('');
+  const [mediaSupported, setMediaSupported] = useState(true);
   const videoRef = useRef(null);
   const localStreamRef = useRef(null);
+
+  // Проверяем поддержку mediaDevices при монтировании
+  useEffect(() => {
+    if (!isMediaDevicesSupported()) {
+      console.warn('mediaDevices API unavailable. HTTPS or localhost required.');
+      setMediaSupported(false);
+      setMediaError(
+        'Камера и микрофон недоступны. Для работы с медиа требуется HTTPS-соединение или localhost.'
+      );
+    }
+  }, []);
 
   // Запрашиваем медиа только при первом взаимодействии с кнопками или при нажатии Войти
   const requestMedia = async () => {
@@ -18,6 +37,15 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
 
     if (mediaRequested) {
       return; // Уже запрашиваем, не делаем повторный запрос
+    }
+
+    // Если mediaDevices не поддерживается, не пытаемся запросить
+    if (!isMediaDevicesSupported()) {
+      setMediaSupported(false);
+      setMediaError(
+        'Камера и микрофон недоступны. Для работы с медиа требуется HTTPS-соединение или localhost.'
+      );
+      return;
     }
 
     setMediaRequested(true);
@@ -48,7 +76,13 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
       setMediaError('');
     } catch (err) {
       console.error('Error obtaining media for preview:', err);
-      setMediaError('Необходимо предоставить доступ к камере и микрофону для участия в видеовстрече.');
+      if (err.name === 'NotAllowedError') {
+        setMediaError('Доступ к камере/микрофону запрещён. Разрешите доступ в настройках браузера.');
+      } else if (err.name === 'NotFoundError') {
+        setMediaError('Камера или микрофон не найдены на устройстве.');
+      } else {
+        setMediaError('Не удалось получить доступ к камере/микрофону.');
+      }
       setMediaRequested(false);
     }
   };
@@ -177,7 +211,11 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
           onChange={(e) => setUserName(e.target.value)}
         />
         {error && <div className="error-hint">{error}</div>}
-        {mediaError && <div className="error-hint">{mediaError}</div>}
+        {mediaError && (
+          <div className="media-warning">
+            <i className="fas fa-exclamation-triangle" /> {mediaError}
+          </div>
+        )}
         <button type="submit" className="primary" disabled={loading || disabled}>
           {loading ? 'Проверяем встречу…' : disabled ? 'Встреча недоступна' : 'Войти в встречу'}
         </button>
