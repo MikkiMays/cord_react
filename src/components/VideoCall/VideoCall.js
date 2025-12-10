@@ -13,6 +13,82 @@ import '@fortawesome/fontawesome-free/css/all.min.css';
  * 4. WebRTC: offer -> answer -> candidate
  * 5. media-status приходит через participants (сервер рассылает обновлённый список)
  */
+
+// TURN/STUN сервера для WebRTC
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  {
+    urls: [
+      'turn:nikg.tech:3478?transport=udp',
+      'turns:nikg.tech:5349?transport=tcp',
+    ],
+    username: 'corduser',
+    credential: 'pX4f3JqN9vC7wR2d',
+  },
+];
+
+// Видео-профили по качеству
+const VIDEO_PROFILES = {
+  low: {
+    constraints: {
+      width: { ideal: 426, max: 426 },
+      height: { ideal: 240, max: 240 },
+      frameRate: { ideal: 12, max: 15 },
+    },
+    maxBitrate: 200_000, // 200 kbps
+  },
+  med: {
+    constraints: {
+      width: { ideal: 640, max: 640 },
+      height: { ideal: 360, max: 360 },
+      frameRate: { ideal: 20, max: 24 },
+    },
+    maxBitrate: 450_000,
+  },
+  hd: {
+    constraints: {
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 24, max: 30 },
+    },
+    maxBitrate: 1_200_000,
+  },
+};
+
+async function applySenderBitrate(pc, profileKey) {
+  const profile = VIDEO_PROFILES[profileKey];
+  const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+  if (!sender) return;
+
+  const params = sender.getParameters();
+  params.degradationPreference = 'maintain-framerate';
+
+  if (!params.encodings || params.encodings.length === 0) {
+    params.encodings = [{}];
+  }
+
+  params.encodings[0].maxBitrate = profile.maxBitrate;
+  params.encodings[0].maxFramerate = profile.constraints.frameRate?.max ?? 20;
+
+  await sender.setParameters(params);
+}
+
+async function applyAudioPriority(pc) {
+  const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'audio');
+  if (!sender) return;
+
+  const params = sender.getParameters();
+  if (!params.encodings || params.encodings.length === 0) {
+    params.encodings = [{}];
+  }
+  params.encodings[0].maxBitrate = 48_000; // 48 kbps
+  await sender.setParameters(params);
+}
+
 function VideoCall({
   userName,
   initialAudioEnabled = true,
@@ -43,6 +119,18 @@ function VideoCall({
   const [isVideoMuted, setIsVideoMuted] = useState(!initialVideoEnabled);
   const [isTogglingAudio, setIsTogglingAudio] = useState(false);
   const [isTogglingVideo, setIsTogglingVideo] = useState(false);
+
+  const [videoProfile, setVideoProfile] = useState('med'); // текущий профиль
+  const [net, setNet] = useState({
+    wsRttMs: null,
+    rtcRttMs: null,
+    lossPct: null,
+    outKbps: null,
+    level: 'ok',
+  });
+
+  const prevOutboundRef = useRef({});
+
 
   // Синхронизируем refs
   useEffect(() => {
@@ -110,15 +198,10 @@ function VideoCall({
     console.log(`Creating PeerConnection for ${sessionId}`);
 
     const pc = new RTCPeerConnection({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        { urls: 'stun:stun1.l.google.com:19302' },
-        { urls: 'stun:stun2.l.google.com:19302' },
-        { urls: 'stun:stun3.l.google.com:19302' },
-        { urls: 'stun:stun4.l.google.com:19302' },
-      ],
+      iceServers: ICE_SERVERS,
       iceCandidatePoolSize: 10,
     });
+    
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
@@ -177,6 +260,10 @@ function VideoCall({
       console.warn(`Local stream not ready when creating PeerConnection for ${sessionId}`);
     }
 
+    // Применяем приоритет аудио и стартовый профиль видео
+    applyAudioPriority(pc).catch(() => {});
+    applySenderBitrate(pc, videoProfile).catch(() => {});
+
     peerConnectionsRef.current[sessionId] = pc;
     return pc;
   }, [sendMessage]);
@@ -202,6 +289,146 @@ function VideoCall({
     }
   }, []);
 
+  const setProfile = useCallback(async (profileKey) => {
+    setVideoProfile(profileKey);
+  
+    const stream = localStreamRef.current;
+    const vTrack = stream?.getVideoTracks?.()[0];
+    if (vTrack) {
+      try {
+        await vTrack.applyConstraints(VIDEO_PROFILES[profileKey].constraints);
+      } catch (e) {
+        console.warn('Failed to apply constraints for profile', profileKey, e);
+      }
+    }
+  
+    const pcs = Object.values(peerConnectionsRef.current);
+    await Promise.allSettled(
+      pcs.map((pc) => applySenderBitrate(pc, profileKey))
+    );
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      const pcs = Object.entries(peerConnectionsRef.current);
+      if (pcs.length === 0) return;
+  
+      let maxRttMs = null;
+      let worstLoss = 0;
+      let minOutKbps = null;
+  
+      for (const [sid, pc] of pcs) {
+        try {
+          const stats = await pc.getStats();
+          const now = Date.now();
+  
+          stats.forEach((r) => {
+            // RTT
+            if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated) {
+              if (typeof r.currentRoundTripTime === 'number') {
+                const ms = r.currentRoundTripTime * 1000;
+                if (maxRttMs === null || ms > maxRttMs) {
+                  maxRttMs = ms;
+                }
+              }
+            }
+  
+            // packet loss (inbound video)
+            if (r.type === 'inbound-rtp' && r.kind === 'video') {
+              const lost = r.packetsLost ?? 0;
+              const recv = r.packetsReceived ?? 0;
+              const total = lost + recv;
+              if (total > 0) {
+                const loss = lost / total;
+                worstLoss = Math.max(worstLoss, loss);
+              }
+            }
+          });
+  
+          // outbound video bitrate
+          let bytesSent = null;
+          stats.forEach((r) => {
+            if (r.type === 'outbound-rtp' && r.kind === 'video' && typeof r.bytesSent === 'number') {
+              bytesSent = r.bytesSent;
+            }
+          });
+  
+          if (bytesSent != null) {
+            const prev = prevOutboundRef.current[sid];
+            if (prev) {
+              const dt = (now - prev.ts) / 1000;
+              if (dt > 0.5) {
+                const kbps = ((bytesSent - prev.bytesSent) * 8) / 1000 / dt;
+                if (minOutKbps == null || kbps < minOutKbps) {
+                  minOutKbps = kbps;
+                }
+              }
+            }
+            prevOutboundRef.current[sid] = { bytesSent, ts: now };
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+  
+      const lossPct = Math.round(worstLoss * 100);
+      let level = 'ok';
+      if ((maxRttMs != null && maxRttMs > 800) || lossPct > 12 || (minOutKbps != null && minOutKbps < 120)) {
+        level = 'bad';
+      } else if ((maxRttMs != null && maxRttMs > 350) || lossPct > 5 || (minOutKbps != null && minOutKbps < 250)) {
+        level = 'meh';
+      }
+  
+      setNet((prev) => ({
+        ...prev,
+        rtcRttMs: maxRttMs != null ? Math.round(maxRttMs) : prev.rtcRttMs,
+        lossPct,
+        outKbps: minOutKbps != null ? Math.round(minOutKbps) : prev.outKbps,
+        level,
+      }));
+  
+      // авто-деградация профиля
+      if (level === 'bad' && videoProfile !== 'low') {
+        setProfile('low');
+      } else if (level === 'meh' && videoProfile === 'hd') {
+        setProfile('med');
+      }
+    }, 2000);
+  
+    return () => clearInterval(interval);
+  }, [setProfile, videoProfile]);
+  
+
+  useEffect(() => {
+    if (!socket) return;
+  
+    let timer = setInterval(() => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'ping', t: Date.now() }));
+      }
+    }, 5000);
+  
+    const onMessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'pong' && typeof data.t === 'number') {
+          const rtt = Date.now() - data.t;
+          setNet((prev) => ({ ...prev, wsRttMs: rtt }));
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+  
+    socket.addEventListener('message', onMessage);
+  
+    return () => {
+      clearInterval(timer);
+      socket.removeEventListener('message', onMessage);
+    };
+  }, [socket]);
+
+  
   /**
    * Инициация WebRTC (отправка offer)
    */
@@ -814,6 +1041,32 @@ function VideoCall({
 
   return (
     <div className="video-call-container">
+      {/* Плашка сети */}
+      <div className={`network-indicator network-indicator--${net.level}`}>
+        <div className="network-indicator__title">
+          Сеть:{' '}
+          {net.level === 'ok'
+            ? 'норма'
+            : net.level === 'meh'
+            ? 'нестабильно'
+            : 'плохо'}
+        </div>
+        <div className="network-indicator__row">
+          WS RTT: {net.wsRttMs ?? '—'} ms
+        </div>
+        <div className="network-indicator__row">
+          RTC RTT: {net.rtcRttMs ?? '—'} ms
+        </div>
+        <div className="network-indicator__row">
+          Потери: {net.lossPct ?? '—'}%
+        </div>
+        <div className="network-indicator__row">
+          Исходящее: {net.outKbps ?? '—'} kbps
+        </div>
+        <div className="network-indicator__row">
+          Профиль: {videoProfile.toUpperCase()}
+        </div>
+      </div>
       <div className="video-grid">
         {/* Локальное видео */}
         <div className="video-item">
