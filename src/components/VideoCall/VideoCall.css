@@ -16,6 +16,7 @@
   background-color: #000;
   border-radius: 14px;
   overflow: hidden;
+  min-height: 200px;
 }
 
 video {
@@ -31,6 +32,7 @@ video {
   transform: translateX(-50%);
   display: flex;
   gap: 8px;
+  z-index: 10;
 }
 
 .controls button {
@@ -46,11 +48,32 @@ video {
   display: flex;
   justify-content: center;
   align-items: center;
-  transition: background-color 0.2s ease;
+  transition: background-color 0.2s ease, transform 0.1s ease, opacity 0.2s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.controls button:hover {
+.controls button:hover:not(:disabled) {
   background-color: rgba(0, 0, 0, 0.8);
+  transform: scale(1.05);
+}
+
+.controls button:active:not(:disabled) {
+  transform: scale(0.95);
+}
+
+.controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.controls button.muted-btn {
+  background-color: rgba(191, 43, 43, 0.8);
+}
+
+.controls button.muted-btn:hover:not(:disabled) {
+  background-color: rgba(220, 60, 60, 0.9);
 }
 
 .video-muted-overlay {
@@ -63,6 +86,7 @@ video {
   display: flex;
   justify-content: center;
   align-items: center;
+  pointer-events: none;
 }
 
 .video-muted-overlay i {
@@ -72,7 +96,7 @@ video {
 
 .user-name-overlay {
   position: absolute;
-  bottom: 60px;
+  bottom: 70px;
   left: 12px;
   width: auto;
   max-width: 90%;
@@ -83,6 +107,7 @@ video {
   text-shadow: 0 0 5px #000;
   background: linear-gradient(120deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.3));
   border-radius: 10px;
+  pointer-events: none;
 }
 
 .media-badges {
@@ -91,6 +116,7 @@ video {
   left: 10px;
   display: flex;
   gap: 6px;
+  pointer-events: none;
 }
 
 .badge {
@@ -114,6 +140,7 @@ video {
 .video-placeholder {
   width: 100%;
   height: 100%;
+  min-height: 200px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -147,4 +174,8 @@ video {
 .controls-row .danger:hover {
   background: #d93c3c;
   transform: translateY(-1px);
+}
+
+.controls-row .danger:active {
+  transform: translateY(0);
 }

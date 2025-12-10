@@ -15,8 +15,9 @@ function Meeting() {
   const [joined, setJoined] = useState(false);
   const [meetingTitle, setMeetingTitle] = useState('');
   const [participants, setParticipants] = useState([]); // список участников (кроме текущего пользователя)
-  const [localAudioEnabled, setLocalAudioEnabled] = useState(true);
-  const [localVideoEnabled, setLocalVideoEnabled] = useState(true);
+  // По умолчанию камера и микрофон ВЫКЛЮЧЕНЫ
+  const [localAudioEnabled, setLocalAudioEnabled] = useState(false);
+  const [localVideoEnabled, setLocalVideoEnabled] = useState(false);
   const [loadingInfo, setLoadingInfo] = useState(true);
   const [error, setError] = useState('');
   const [meetingUnavailable, setMeetingUnavailable] = useState(false);
@@ -45,7 +46,7 @@ function Meeting() {
   }, [meetingId]);
 
   // Обработчик нажатия "Войти в встречу"
-  const handleJoin = useCallback((name, initialAudioOn = true, initialVideoOn = true) => {
+  const handleJoin = useCallback((name, initialAudioOn = false, initialVideoOn = false) => {
     const trimmedName = name.trim();
     if (!trimmedName) {
       setError('Введите имя, чтобы коллеги знали, кто присоединился');
@@ -64,6 +65,7 @@ function Meeting() {
         setLocalAudioEnabled(initialAudioOn);
         setLocalVideoEnabled(initialVideoOn);
         setJoined(true);
+        console.log(`Meeting: Joined as ${trimmedName}, audio=${initialAudioOn}, video=${initialVideoOn}`);
       })
       .catch((err) => {
         console.warn('Failed to join meeting', err);
@@ -74,6 +76,7 @@ function Meeting() {
 
   useEffect(() => {
     // Автоподключение к новой встрече, если указано и имя уже введено
+    // По умолчанию камера и микрофон ВЫКЛЮЧЕНЫ
     if (
       !autoJoinAttemptedRef.current &&
       autoJoin &&
@@ -83,21 +86,29 @@ function Meeting() {
       userName?.trim()
     ) {
       autoJoinAttemptedRef.current = true;
-      handleJoin(userName.trim(), true, true);
+      // Автоприсоединение тоже с выключенными медиа
+      handleJoin(userName.trim(), false, false);
     }
   }, [autoJoin, joined, loadingInfo, meetingUnavailable, userName, handleJoin]);
 
-  const handleParticipantsChange = (list) => {
+  const handleParticipantsChange = useCallback((list) => {
     setParticipants(list || []);
-  };
+  }, []);
 
-  const handleLeave = () => {
+  const handleLeave = useCallback(() => {
+    console.log('Meeting: User left the meeting');
     setJoined(false);
     setParticipants([]);
-    setLocalAudioEnabled(true);
-    setLocalVideoEnabled(true);
+    // При выходе сбрасываем медиа в выключенное состояние
+    setLocalAudioEnabled(false);
+    setLocalVideoEnabled(false);
     setConnectionNonce((prev) => prev + 1);
-  };
+  }, []);
+
+  const handleLocalMediaChange = useCallback((audioOn, videoOn) => {
+    setLocalAudioEnabled(audioOn);
+    setLocalVideoEnabled(videoOn);
+  }, []);
 
   // Контент до входа во встречу (без WebSocket)
   const preJoinContent = (
@@ -152,10 +163,7 @@ function Meeting() {
               initialVideoEnabled={localVideoEnabled}
               onParticipantsChange={handleParticipantsChange}
               onLeave={handleLeave}
-              onLocalMediaChange={(audioOn, videoOn) => {
-                setLocalAudioEnabled(audioOn);
-                setLocalVideoEnabled(videoOn);
-              }}
+              onLocalMediaChange={handleLocalMediaChange}
             />
           </section>
           <aside className="side-panel">

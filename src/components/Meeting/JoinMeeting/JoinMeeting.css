@@ -50,15 +50,32 @@
   align-items: center;
   transition: all 0.2s ease;
   backdrop-filter: blur(8px);
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.preview .controls button:hover {
+.preview .controls button:hover:not(:disabled) {
   background-color: rgba(0, 0, 0, 0.9);
   transform: scale(1.1);
 }
 
-.preview .controls button:active {
+.preview .controls button:active:not(:disabled) {
   transform: scale(0.95);
+}
+
+.preview .controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.preview .controls button.muted {
+  background-color: rgba(191, 43, 43, 0.8);
+}
+
+.preview .controls button.muted:hover:not(:disabled) {
+  background-color: rgba(220, 60, 60, 0.9);
 }
 
 .placeholder-video {
@@ -110,13 +127,75 @@
   border-radius: 10px;
   font-size: 0.9em;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   gap: 8px;
 }
 
 .media-warning i {
+  flex-shrink: 0;
+}
+
+.media-info {
+  color: #a8c8ff;
+  background: rgba(90, 141, 238, 0.12);
+  padding: 10px 12px;
+  border: 1px solid rgba(90, 141, 238, 0.35);
+  border-radius: 10px;
+  font-size: 0.9em;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.media-info i {
   margin-top: 2px;
   flex-shrink: 0;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+.media-success {
+  color: #a8ffcc;
+  background: rgba(93, 211, 158, 0.12);
+  padding: 10px 12px;
+  border: 1px solid rgba(93, 211, 158, 0.35);
+  border-radius: 10px;
+  font-size: 0.9em;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.permission-help {
+  margin-top: 4px;
+  padding-left: 20px;
+}
+
+.permission-help small {
+  color: rgba(168, 200, 255, 0.8);
+  font-size: 0.85em;
+}
+
+.retry-button {
+  align-self: flex-start;
+  margin-top: 8px;
+  padding: 6px 12px;
+  background: rgba(255, 170, 40, 0.2);
+  border: 1px solid rgba(255, 170, 40, 0.4);
+  border-radius: 6px;
+  color: #ffd699;
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.retry-button:hover {
+  background: rgba(255, 170, 40, 0.3);
+  border-color: rgba(255, 170, 40, 0.6);
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 @media (max-width: 900px) {

@@ -41,17 +41,16 @@ function Home() {
       <div className="home-card">
         <div className="home-header">
           <p className="badge">Видеовстречи</p>
-          <h1>Создавайте и присоединяйтесь к встречам как в Google Meet</h1>
+          <h1>Cord — простые и быстрые видеовстречи.</h1>
           <p className="subtitle">
-            Используйте готовые роуты из cord: создайте новую встречу, пришлите ссылку коллегам и
-            заходите с любого устройства.
+            Создавайте комнаты, делитесь ссылками и подключайтесь с любого устройства!
           </p>
         </div>
 
         <div className="home-grid">
           <div className="panel">
             <h3>Создать встречу</h3>
-            <p className="helper">Мы попробуем вызвать backend /api/meetings. Если он недоступен, сгенерируем ID локально.</p>
+            <p className="helper">Мы создадим комнату и сгенерируем ID — просто поделитесь им с участниками.</p>
             <label className="field-label" htmlFor="creator-name">Ваше имя</label>
             <input
               id="creator-name"
@@ -67,7 +66,7 @@ function Home() {
 
           <div className="panel">
             <h3>У меня есть приглашение</h3>
-            <p className="helper">Введите код или ссылку на встречу, чтобы присоединиться.</p>
+            <p className="helper">Введите код встречи, чтобы присоединиться.</p>
             <label className="field-label" htmlFor="meeting-code">ID встречи</label>
             <input
               id="meeting-code"

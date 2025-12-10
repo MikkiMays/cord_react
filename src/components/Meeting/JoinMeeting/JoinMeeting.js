@@ -10,37 +10,24 @@ function isMediaDevicesSupported() {
 
 function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = false }) {
   const [userName, setUserName] = useState(defaultName);
-  const [isAudioOn, setIsAudioOn] = useState(true);
-  const [isVideoOn, setIsVideoOn] = useState(true);
-  const [mediaRequested, setMediaRequested] = useState(false);
+  // По умолчанию микрофон и камера ВЫКЛЮЧЕНЫ
+  const [isAudioOn, setIsAudioOn] = useState(false);
+  const [isVideoOn, setIsVideoOn] = useState(false);
   const [mediaError, setMediaError] = useState('');
   const [mediaSupported, setMediaSupported] = useState(true);
+  const [permissionGranted, setPermissionGranted] = useState(false);
+  const [videoAvailable, setVideoAvailable] = useState(false);
+  const [audioAvailable, setAudioAvailable] = useState(false);
   const videoRef = useRef(null);
   const localStreamRef = useRef(null);
 
-  // Проверяем поддержку mediaDevices при монтировании
+  /**
+   * Запрашиваем разрешение на медиа СРАЗУ при загрузке компонента
+   */
   useEffect(() => {
+    // Проверяем поддержку mediaDevices
     if (!isMediaDevicesSupported()) {
-      console.warn('mediaDevices API unavailable. HTTPS or localhost required.');
-      setMediaSupported(false);
-      setMediaError(
-        'Камера и микрофон недоступны. Для работы с медиа требуется HTTPS-соединение или localhost.'
-      );
-    }
-  }, []);
-
-  // Запрашиваем медиа только при первом взаимодействии с кнопками или при нажатии Войти
-  const requestMedia = async () => {
-    if (localStreamRef.current) {
-      return;
-    }
-
-    if (mediaRequested) {
-      return; // Уже запрашиваем, не делаем повторный запрос
-    }
-
-    // Если mediaDevices не поддерживается, не пытаемся запросить
-    if (!isMediaDevicesSupported()) {
+      console.warn('mediaDevices API недоступен. Требуется HTTPS или localhost.');
       setMediaSupported(false);
       setMediaError(
         'Камера и микрофон недоступны. Для работы с медиа требуется HTTPS-соединение или localhost.'
@@ -48,47 +35,144 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
       return;
     }
 
-    setMediaRequested(true);
-    try {
-      // Всегда запрашиваем оба потока, чтобы можно было переключать их позже
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: true, 
-        audio: true 
-      });
-      localStreamRef.current = stream;
-      
-      // Применяем начальные настройки на основе текущего состояния
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = isAudioOn;
-      });
-      stream.getVideoTracks().forEach((track) => {
-        track.enabled = isVideoOn;
-      });
-      
-      // Отображаем превью видео в элементе <video>
-      if (videoRef.current) {
-        if (isVideoOn) {
-          videoRef.current.srcObject = stream;
-        } else {
+    // Запрашиваем разрешения сразу при монтировании
+    const requestMediaPermissions = async () => {
+      try {
+        console.log('Запрашиваем разрешение на камеру и микрофон...');
+        
+        // Сначала пытаемся получить оба устройства
+        let stream;
+        let audioAvailable = false;
+        let videoAvailable = false;
+        const errors = [];
+        
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+          });
+          audioAvailable = stream.getAudioTracks().length > 0;
+          videoAvailable = stream.getVideoTracks().length > 0;
+          console.log('Оба устройства получены:', { audio: audioAvailable, video: videoAvailable });
+        } catch (err) {
+          // Если не удалось получить оба, пробуем по отдельности
+          console.log('Не удалось получить оба устройства, пробуем по отдельности...', err.name);
+          
+          const tracks = [];
+          
+          // Пробуем получить аудио
+          try {
+            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            tracks.push(...audioStream.getAudioTracks());
+            audioAvailable = true;
+            console.log('Аудио получено');
+            // Останавливаем временный поток, треки уже сохранены
+            audioStream.getVideoTracks().forEach(t => t.stop());
+          } catch (audioErr) {
+            console.warn('Не удалось получить аудио:', audioErr.name);
+            if (audioErr.name === 'NotAllowedError') {
+              errors.push('Доступ к микрофону запрещён');
+            } else if (audioErr.name === 'NotFoundError') {
+              errors.push('Микрофон не найден');
+            } else {
+              errors.push('Не удалось получить доступ к микрофону');
+            }
+          }
+          
+          // Пробуем получить видео
+          try {
+            const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            tracks.push(...videoStream.getVideoTracks());
+            videoAvailable = true;
+            console.log('Видео получено');
+            // Останавливаем временный поток, треки уже сохранены
+            videoStream.getAudioTracks().forEach(t => t.stop());
+          } catch (videoErr) {
+            console.warn('Не удалось получить видео:', videoErr.name);
+            if (videoErr.name === 'NotAllowedError') {
+              errors.push('Доступ к камере запрещён');
+            } else if (videoErr.name === 'NotFoundError') {
+              errors.push('Камера не найдена');
+            } else {
+              errors.push('Не удалось получить доступ к камере');
+            }
+          }
+          
+          // Создаем новый поток из полученных треков
+          if (tracks.length > 0) {
+            stream = new MediaStream(tracks);
+            console.log('Создан поток из отдельных треков:', tracks.length);
+          } else {
+            throw new Error('Не удалось получить ни одно устройство');
+          }
+        }
+        
+        if (!stream || stream.getTracks().length === 0) {
+          throw new Error('Не удалось получить доступ к медиа-устройствам');
+        }
+        
+        localStreamRef.current = stream;
+        setPermissionGranted(true);
+        setVideoAvailable(videoAvailable);
+        setAudioAvailable(audioAvailable);
+        
+        // Формируем сообщение об ошибке/предупреждении
+        // Используем errors, если они были собраны, иначе формируем на основе доступности
+        let errorMessage = '';
+        if (audioAvailable && videoAvailable) {
+          errorMessage = '';
+        } else if (!audioAvailable && !videoAvailable) {
+          // Если есть детальные ошибки, используем их
+          if (errors && errors.length > 0) {
+            errorMessage = errors.join('. ') + '.';
+          } else {
+            errorMessage = 'Не удалось получить доступ к камере и микрофону.';
+          }
+        } else if (!audioAvailable) {
+          errorMessage = 'Микрофон недоступен. Вы сможете участвовать только с видео.';
+        } else if (!videoAvailable) {
+          errorMessage = 'Камера недоступна. Вы сможете участвовать только с аудио.';
+        }
+        setMediaError(errorMessage);
+        
+        // По умолчанию всё ВЫКЛЮЧЕНО - отключаем треки
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        stream.getVideoTracks().forEach((track) => {
+          track.enabled = false;
+        });
+        
+        // Видео не показываем пока камера выключена
+        if (videoRef.current) {
           videoRef.current.srcObject = null;
         }
+        
+        console.log('Разрешения получены, треки по умолчанию выключены');
+      } catch (err) {
+        console.error('Ошибка получения доступа к медиа:', err);
+        setPermissionGranted(false);
+        setVideoAvailable(false);
+        setAudioAvailable(false);
+        if (err.name === 'NotAllowedError' || err.message?.includes('запрещён')) {
+          if (!mediaError) {
+            setMediaError('Доступ к камере/микрофону запрещён. Разрешите доступ в настройках браузера.');
+          }
+        } else if (err.name === 'NotFoundError' || err.message?.includes('не найден')) {
+          if (!mediaError) {
+            setMediaError('Камера или микрофон не найдены на устройстве.');
+          }
+        } else {
+          if (!mediaError) {
+            setMediaError('Не удалось получить доступ к камере/микрофону.');
+          }
+        }
       }
-      setMediaError('');
-    } catch (err) {
-      console.error('Error obtaining media for preview:', err);
-      if (err.name === 'NotAllowedError') {
-        setMediaError('Доступ к камере/микрофону запрещён. Разрешите доступ в настройках браузера.');
-      } else if (err.name === 'NotFoundError') {
-        setMediaError('Камера или микрофон не найдены на устройстве.');
-      } else {
-        setMediaError('Не удалось получить доступ к камере/микрофону.');
-      }
-      setMediaRequested(false);
-    }
-  };
+    };
 
-  // Очистка: останавливаем поток при уходе со страницы
-  useEffect(() => {
+    requestMediaPermissions();
+
+    // Cleanup: останавливаем поток при уходе со страницы
     return () => {
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((track) => track.stop());
@@ -97,64 +181,52 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
     };
   }, []);
 
-  // Переключение микрофона в превью
-  const toggleAudio = async () => {
-    // Если медиа еще не запрошены, запрашиваем их
+  /**
+   * Переключение микрофона в превью
+   */
+  const toggleAudio = () => {
     if (!localStreamRef.current) {
-      await requestMedia();
-      // Если после запроса все еще нет потока, просто меняем состояние
-      if (!localStreamRef.current) {
-        setIsAudioOn((prev) => !prev);
-        return;
+      console.warn('toggleAudio: поток не инициализирован');
+      return;
+    }
+    
+    const newState = !isAudioOn;
+    localStreamRef.current.getAudioTracks().forEach((track) => {
+      track.enabled = newState;
+    });
+    setIsAudioOn(newState);
+    console.log('Микрофон:', newState ? 'включён' : 'выключен');
+  };
+
+  /**
+   * Переключение камеры в превью
+   */
+  const toggleVideo = () => {
+    if (!localStreamRef.current) {
+      console.warn('toggleVideo: поток не инициализирован');
+      return;
+    }
+    
+    const newState = !isVideoOn;
+    localStreamRef.current.getVideoTracks().forEach((track) => {
+      track.enabled = newState;
+    });
+    
+    // Обновляем видео элемент
+    if (videoRef.current) {
+      if (newState) {
+        videoRef.current.srcObject = localStreamRef.current;
+      } else {
+        videoRef.current.srcObject = null;
       }
     }
     
-    const nextAudioOn = !isAudioOn;
-    if (localStreamRef.current) {
-      localStreamRef.current.getAudioTracks().forEach((track) => {
-        track.enabled = nextAudioOn;
-      });
-    }
-    setIsAudioOn(nextAudioOn);
+    setIsVideoOn(newState);
+    console.log('Камера:', newState ? 'включена' : 'выключена');
   };
 
-  // Переключение камеры в превью
-  const toggleVideo = async () => {
-    // Если медиа еще не запрошены, запрашиваем их
-    if (!localStreamRef.current) {
-      await requestMedia();
-      // Если после запроса все еще нет потока, просто меняем состояние
-      if (!localStreamRef.current) {
-        setIsVideoOn((prev) => !prev);
-        return;
-      }
-    }
-    
-    const nextVideoOn = !isVideoOn;
-    if (localStreamRef.current) {
-      localStreamRef.current.getVideoTracks().forEach((track) => {
-        track.enabled = nextVideoOn;
-      });
-      
-      // Обновляем видео элемент
-      if (videoRef.current) {
-        if (nextVideoOn && localStreamRef.current) {
-          videoRef.current.srcObject = localStreamRef.current;
-        } else {
-          videoRef.current.srcObject = null;
-        }
-      }
-    }
-    setIsVideoOn(nextVideoOn);
-  };
-
-  const handleSubmit = async (e) => {
+  const handleSubmit = (e) => {
     e.preventDefault();
-    
-    // Запрашиваем медиа перед входом, если еще не запрошены
-    if (!localStreamRef.current) {
-      await requestMedia();
-    }
     
     // Останавливаем локальный поток перед входом (он будет создан заново в VideoCall)
     if (localStreamRef.current) {
@@ -165,33 +237,50 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
       }
     }
     
-    // При нажатии "Войти" вызываем onJoin, передавая имя и начальные состояния аудио/видео
+    // При нажатии "Войти" вызываем onJoin, передавая имя и текущие состояния аудио/видео
     onJoin(userName || 'Гость', isAudioOn, isVideoOn);
   };
+
+  // Определяем, можно ли нажимать кнопки управления
+  const canToggleMedia = permissionGranted && localStreamRef.current;
+  const canToggleVideo = canToggleMedia && videoAvailable;
+  const canToggleAudio = canToggleMedia && audioAvailable;
 
   return (
     <div className="join-card">
       <div className="preview">
-        {/* Видео элемент всегда в DOM для возможности обновления */}
+        {/* Видео элемент для превью */}
         <video 
           ref={videoRef} 
           autoPlay 
           muted 
           playsInline
-          style={{ display: isVideoOn && localStreamRef.current ? 'block' : 'none' }}
+          style={{ display: isVideoOn && permissionGranted ? 'block' : 'none' }}
         />
-        {/* Плейсхолдер с аватаром, когда видео выключено или поток не загружен */}
-        {(!isVideoOn || !localStreamRef.current) && (
+        {/* Плейсхолдер с аватаром, когда видео выключено */}
+        {(!isVideoOn || !permissionGranted) && (
           <div className="placeholder-video">
             <div className="avatar">{(userName || 'Гость').charAt(0).toUpperCase()}</div>
           </div>
         )}
         {/* Кнопки управления устройствами на предэкране */}
         <div className="controls">
-          <button type="button" onClick={toggleAudio} title={isAudioOn ? 'Выключить микрофон' : 'Включить микрофон'}>
+          <button 
+            type="button" 
+            onClick={toggleAudio} 
+            disabled={!canToggleAudio}
+            className={!isAudioOn ? 'muted' : ''}
+            title={isAudioOn ? 'Выключить микрофон' : 'Включить микрофон'}
+          >
             <i className={`fas ${isAudioOn ? 'fa-microphone' : 'fa-microphone-slash'}`} />
           </button>
-          <button type="button" onClick={toggleVideo} title={isVideoOn ? 'Выключить камеру' : 'Включить камеру'}>
+          <button 
+            type="button" 
+            onClick={toggleVideo} 
+            disabled={!canToggleVideo}
+            className={!isVideoOn ? 'muted' : ''}
+            title={isVideoOn ? 'Выключить камеру' : 'Включить камеру'}
+          >
             <i className={`fas ${isVideoOn ? 'fa-video' : 'fa-video-slash'}`} />
           </button>
         </div>
@@ -214,6 +303,11 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
         {mediaError && (
           <div className="media-warning">
             <i className="fas fa-exclamation-triangle" /> {mediaError}
+          </div>
+        )}
+        {!permissionGranted && !mediaError && mediaSupported && (
+          <div className="media-info">
+            <i className="fas fa-info-circle" /> Ожидание разрешения на использование камеры и микрофона...
           </div>
         )}
         <button type="submit" className="primary" disabled={loading || disabled}>

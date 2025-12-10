@@ -1,4 +1,4 @@
-import React, { createContext, useEffect, useState } from 'react';
+import React, { createContext, useEffect, useState, useRef, useCallback } from 'react';
 
 export const WebSocketContext = createContext(null);
 
@@ -32,56 +32,112 @@ function getCloseReason(code, reason) {
 
 export const WebSocketProvider = ({ children, meetingId }) => {
   const [socket, setSocket] = useState(null);
+  const [connectionState, setConnectionState] = useState('disconnected');
+  const connectionRef = useRef(null);
+  const reconnectTimeoutRef = useRef(null);
+  const mountedRef = useRef(true);
+  const intentionalCloseRef = useRef(false);
 
-  useEffect(() => {
+  /**
+   * Создание WebSocket соединения
+   */
+  const connect = useCallback(() => {
     if (!meetingId) {
-      console.log('WebSocketProvider: meetingId not set, skipping connection');
-      return undefined;
+      console.log('WebSocketProvider: meetingId не задан, пропускаем подключение');
+      return null;
+    }
+
+    // Очищаем предыдущее соединение если есть
+    if (connectionRef.current) {
+      console.log('WebSocketProvider: Закрываем предыдущее соединение');
+      intentionalCloseRef.current = true;
+      connectionRef.current.close();
+      connectionRef.current = null;
     }
 
     const url = `${WS_BASE}/webrtc-signal?meetingId=${encodeURIComponent(meetingId)}`;
-    console.log('WebSocket: Connecting to', url);
+    console.log('WebSocket: Подключение к', url);
     
     let connection;
     try {
       connection = new WebSocket(url);
     } catch (error) {
-      console.error('WebSocket: Error creating connection:', error);
-      return undefined;
+      console.error('WebSocket: Ошибка создания соединения:', error);
+      setConnectionState('error');
+      return null;
     }
+
+    connectionRef.current = connection;
+    setConnectionState('connecting');
+    intentionalCloseRef.current = false;
 
     // Отслеживаем состояние подключения
     let wasOpened = false;
 
     connection.onopen = () => {
+      if (!mountedRef.current) {
+        connection.close();
+        return;
+      }
       wasOpened = true;
-      console.log('WebSocket: Connection established successfully');
+      setConnectionState('connected');
+      console.log('WebSocket: Соединение установлено успешно');
+      setSocket(connection);
     };
 
     connection.onerror = (event) => {
-      console.error('WebSocket: Connection error', event);
+      console.error('WebSocket: Ошибка соединения', event);
       if (!wasOpened) {
-        console.error('WebSocket: Failed to establish connection. Check:');
-        console.error('  1. Is the backend running on the server?');
-        console.error('  2. Is the WebSocket port open?');
-        console.error('  3. If using nginx - is WebSocket proxying configured?');
+        console.error('WebSocket: Соединение не удалось установить. Проверьте:');
+        console.error('  1. Работает ли бэкенд на сервере?');
+        console.error('  2. Открыт ли порт для WebSocket?');
+        console.error('  3. Если используется nginx - настроено ли проксирование WebSocket?');
+        setConnectionState('error');
       }
     };
 
     connection.onclose = (event) => {
       const reason = getCloseReason(event.code, event.reason);
-      console.log(`WebSocket: Connection closed [code ${event.code}]: ${reason}`);
+      console.log(`WebSocket: Соединение закрыто [код ${event.code}]: ${reason}`);
       
       if (!wasOpened) {
-        console.warn('WebSocket: Connection closed before establishing!');
-        console.warn('Possible reasons:');
-        console.warn('  - Backend is not running or unavailable');
-        console.warn('  - meetingId does not exist (code 4404)');
-        console.warn('  - Firewall is blocking WebSocket');
-        console.warn('  - nginx is not proxying WebSocket correctly');
+        console.warn('WebSocket: Соединение закрылось до установления связи!');
+        console.warn('Возможные причины:');
+        console.warn('  - Бэкенд не запущен или недоступен');
+        console.warn('  - meetingId не существует (код 4404)');
+        console.warn('  - Firewall блокирует WebSocket');
+        console.warn('  - nginx не проксирует WebSocket правильно');
+      }
+      
+      // Очищаем refs
+      if (connectionRef.current === connection) {
+        connectionRef.current = null;
       }
       
       setSocket(null);
+      setConnectionState('disconnected');
+
+      // Автоматическое переподключение при неожиданном разрыве
+      // Не переподключаемся если:
+      // - Компонент размонтирован
+      // - Это было намеренное закрытие
+      // - Код 4404 (встреча не найдена)
+      // - Код 1000 (нормальное закрытие)
+      if (
+        mountedRef.current && 
+        !intentionalCloseRef.current && 
+        event.code !== 4404 && 
+        event.code !== 1000 &&
+        wasOpened
+      ) {
+        console.log('WebSocket: Планируем переподключение через 3 секунды...');
+        reconnectTimeoutRef.current = setTimeout(() => {
+          if (mountedRef.current) {
+            console.log('WebSocket: Переподключение...');
+            connect();
+          }
+        }, 3000);
+      }
     };
 
     connection.onmessage = (event) => {
@@ -89,21 +145,46 @@ export const WebSocketProvider = ({ children, meetingId }) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'your-id') {
-          console.log('WebSocket: Received session ID:', data.sessionId);
+          console.log('WebSocket: Получен ID сессии:', data.sessionId);
         }
       } catch (e) {
         // игнорируем ошибки парсинга
       }
     };
 
-    setSocket(connection);
+    return connection;
+  }, [meetingId]);
+
+  /**
+   * Инициализация соединения при монтировании
+   */
+  useEffect(() => {
+    mountedRef.current = true;
+    intentionalCloseRef.current = false;
+    
+    connect();
 
     return () => {
-      console.log('WebSocket: Closing connection (cleanup)');
-      connection.close();
+      console.log('WebSocketProvider: Размонтирование, закрываем соединение');
+      mountedRef.current = false;
+      intentionalCloseRef.current = true;
+      
+      // Отменяем pending reconnect
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      
+      // Закрываем соединение
+      if (connectionRef.current) {
+        connectionRef.current.close(1000, 'Component unmounted');
+        connectionRef.current = null;
+      }
+      
       setSocket(null);
+      setConnectionState('disconnected');
     };
-  }, [meetingId]);
+  }, [connect]);
 
   return (
     <WebSocketContext.Provider value={socket}>
