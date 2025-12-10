@@ -1,0 +1,1205 @@
+import React, {
+  useRef,
+  useState,
+  useEffect,
+  useContext,
+  useCallback,
+} from 'react';
+import { WebSocketContext } from '../../contexts/WebSocketContext';
+import './VideoCall.css';
+import '@fortawesome/fontawesome-free/css/all.min.css';
+
+/**
+ * WebRTC-видеозвонок для cord.
+ *
+ * Протокол сигналинга (через /webrtc-signal):
+ *  - your-id        -> получаем sessionId
+ *  - set-name       -> отправляем имя
+ *  - participants   -> полный список участников (с их media-status)
+ *  - new-user       -> новый участник, инициируем offer
+ *  - offer/answer   -> WebRTC SDP
+ *  - candidate      -> ICE-кандидаты
+ *  - user-left      -> участник покинул встречу
+ *  - media-status   -> состояние микрофона/камеры
+ */
+
+// Базовые STUN (fallback, если TURN не отдал креды)
+const FALLBACK_ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+];
+
+// Видео-профили
+const VIDEO_PROFILES = {
+  low: {
+    constraints: {
+      width: { ideal: 426, max: 426 },
+      height: { ideal: 240, max: 240 },
+      frameRate: { ideal: 12, max: 15 },
+    },
+    maxBitrate: 200_000,
+  },
+  med: {
+    constraints: {
+      width: { ideal: 640, max: 640 },
+      height: { ideal: 360, max: 360 },
+      frameRate: { ideal: 20, max: 24 },
+    },
+    maxBitrate: 450_000,
+  },
+  hd: {
+    constraints: {
+      width: { ideal: 1280, max: 1280 },
+      height: { ideal: 720, max: 720 },
+      frameRate: { ideal: 24, max: 30 },
+    },
+    maxBitrate: 1_200_000,
+  },
+};
+
+/**
+ * Динамическая загрузка TURN-кредов с бэка.
+ * GET /api/turn/credentials -> { ttl, iceServers: [...] }
+ */
+async function fetchIceServers() {
+  try {
+    const resp = await fetch('/api/turn/credentials', {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!resp.ok) {
+      console.warn('TURN credentials request failed with status', resp.status);
+      return FALLBACK_ICE_SERVERS;
+    }
+    const json = await resp.json();
+    if (!json || !Array.isArray(json.iceServers)) {
+      console.warn('TURN credentials response malformed', json);
+      return FALLBACK_ICE_SERVERS;
+    }
+    return json.iceServers;
+  } catch (e) {
+    console.warn('TURN credentials request error', e);
+    return FALLBACK_ICE_SERVERS;
+  }
+}
+
+/**
+ * Применяем битрейт для видео-сендера
+ */
+async function applySenderBitrate(pc, profileKey) {
+  const profile = VIDEO_PROFILES[profileKey];
+  if (!profile) return;
+  const sender = pc.getSenders().find(
+    (s) => s.track && s.track.kind === 'video',
+  );
+  if (!sender) return;
+
+  const params = sender.getParameters() || {};
+  params.degradationPreference = 'maintain-framerate';
+
+  if (!params.encodings || params.encodings.length === 0) {
+    params.encodings = [{}];
+  }
+
+  params.encodings[0].maxBitrate = profile.maxBitrate;
+  params.encodings[0].maxFramerate =
+    profile.constraints.frameRate?.max ?? 20;
+
+  try {
+    await sender.setParameters(params);
+  } catch (e) {
+    console.warn('applySenderBitrate error', e);
+  }
+}
+
+/**
+ * Даём аудио приоритетный канал: не даём битрейту падать до нуля.
+ */
+async function applyAudioPriority(pc) {
+  const sender = pc.getSenders().find(
+    (s) => s.track && s.track.kind === 'audio',
+  );
+  if (!sender) return;
+
+  const params = sender.getParameters() || {};
+  if (!params.encodings || params.encodings.length === 0) {
+    params.encodings = [{}];
+  }
+  // 16–48 kbps достаточно для речи
+  params.encodings[0].minBitrate = 16_000;
+  params.encodings[0].maxBitrate = 64_000;
+
+  try {
+    await sender.setParameters(params);
+  } catch (e) {
+    console.warn('applyAudioPriority error', e);
+  }
+}
+
+/**
+ * Оценка уровня сети по rtt / loss / bitrates
+ */
+function classifyNetLevel({ rtcRttMs, lossPct }) {
+  if (rtcRttMs == null && lossPct == null) return 'ok';
+
+  if ((rtcRttMs ?? 0) < 120 && (lossPct ?? 0) < 3) return 'ok';
+  if ((rtcRttMs ?? 0) < 250 && (lossPct ?? 0) < 7) return 'meh';
+  return 'bad';
+}
+
+/**
+ * Плитка участника
+ */
+function ParticipantTile({ stream, participant }) {
+  const videoRef = useRef(null);
+
+  useEffect(() => {
+    if (videoRef.current) {
+      if (stream) {
+        videoRef.current.srcObject = stream;
+      } else {
+        videoRef.current.srcObject = null;
+      }
+    }
+  }, [stream]);
+
+  const userName = participant?.userName || 'Участник';
+  const audioEnabled = participant?.audioEnabled === true;
+  const videoEnabled = participant?.videoEnabled === true;
+
+  return (
+    <div className="video-item">
+      {stream && videoEnabled ? (
+        <video ref={videoRef} autoPlay playsInline />
+      ) : (
+        <div className="video-placeholder">
+          {userName.charAt(0).toUpperCase()}
+        </div>
+      )}
+      <div className="user-name-overlay">{userName}</div>
+      <div className="media-badges">
+        <span className={`badge ${!audioEnabled ? 'muted' : ''}`}>
+          <i
+            className={`fas ${
+              !audioEnabled ? 'fa-microphone-slash' : 'fa-microphone'
+            }`}
+          />
+        </span>
+        <span className={`badge ${!videoEnabled ? 'muted' : ''}`}>
+          <i
+            className={`fas ${
+              !videoEnabled ? 'fa-video-slash' : 'fa-video'
+            }`}
+          />
+        </span>
+      </div>
+      {!videoEnabled && (
+        <div className="video-muted-overlay">
+          <i className="fas fa-video-slash" />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function VideoCall({
+  userName,
+  initialAudioEnabled = true,
+  initialVideoEnabled = true,
+  onParticipantsChange,
+  onLocalMediaChange,
+  onLeave,
+}) {
+  const socket = useContext(WebSocketContext);
+
+  // === refs ===
+  const socketRef = useRef(socket);
+  const localVideoRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const clientIdRef = useRef(null);
+  const onLeaveRef = useRef(onLeave);
+  const userNameRef = useRef(userName);
+
+  const peerConnectionsRef = useRef({}); // sessionId -> RTCPeerConnection
+  const pendingCandidatesRef = useRef({}); // sessionId -> ICE candidates[]
+  const disconnectingRef = useRef(false);
+  const nameSentRef = useRef(false);
+  const mediaInitializedRef = useRef(false);
+  const iceServersRef = useRef(FALLBACK_ICE_SERVERS);
+  const iceRestartTimersRef = useRef({}); // sessionId -> timeout id
+  const statsIntervalRef = useRef(null);
+
+  // === state ===
+  const [participants, setParticipants] = useState({});
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [isAudioMuted, setIsAudioMuted] = useState(!initialAudioEnabled);
+  const [isVideoMuted, setIsVideoMuted] = useState(!initialVideoEnabled);
+  const [isTogglingAudio, setIsTogglingAudio] = useState(false);
+  const [isTogglingVideo, setIsTogglingVideo] = useState(false);
+
+  const [videoProfile, setVideoProfile] = useState('hd');
+  const [net, setNet] = useState({
+    wsRttMs: null,
+    rtcRttMs: null,
+    lossPct: null,
+    outKbps: null,
+    level: 'ok',
+  });
+
+  const prevOutboundRef = useRef({}); // trackId -> { bytesSent, timestamp }
+
+  // === sync refs ===
+  useEffect(() => {
+    socketRef.current = socket;
+  }, [socket]);
+
+  useEffect(() => {
+    onLeaveRef.current = onLeave;
+  }, [onLeave]);
+
+  useEffect(() => {
+    userNameRef.current = userName;
+  }, [userName]);
+
+  /**
+   * Отправка JSON через WebSocket
+   */
+  const sendMessage = useCallback((payload) => {
+    const ws = socketRef.current;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(payload));
+    }
+  }, []);
+
+  /**
+   * Закрыть peer+стрим по sessionId
+   */
+  const closePeerConnection = useCallback((sessionId) => {
+    const pcs = peerConnectionsRef.current;
+    const pc = pcs[sessionId];
+    if (pc) {
+      try {
+        pc.onicecandidate = null;
+        pc.ontrack = null;
+        pc.onconnectionstatechange = null;
+        pc.close();
+      } catch (e) {
+        // ignore
+      }
+      delete pcs[sessionId];
+    }
+
+    setRemoteStreams((prev) => {
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+
+    if (iceRestartTimersRef.current[sessionId]) {
+      clearTimeout(iceRestartTimersRef.current[sessionId]);
+      delete iceRestartTimersRef.current[sessionId];
+    }
+  }, []);
+
+  /**
+   * Создание PeerConnection c обработчиками
+   */
+  const createPeerConnection = useCallback(
+    (sessionId) => {
+      const existing = peerConnectionsRef.current[sessionId];
+      if (existing) {
+        return existing;
+      }
+
+      const pc = new RTCPeerConnection({
+        iceServers: iceServersRef.current,
+        iceTransportPolicy: 'all',
+      });
+
+      // ICE candidates -> сигналинг
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          sendMessage({
+            type: 'candidate',
+            candidate: event.candidate,
+            receiver: sessionId,
+          });
+        }
+      };
+
+      // Remote track -> MediaStream
+      pc.ontrack = (event) => {
+        const [stream] = event.streams;
+        if (!stream) return;
+
+        setRemoteStreams((prev) => {
+          const existingStream = prev[sessionId];
+          if (existingStream === stream) return prev;
+          return {
+            ...prev,
+            [sessionId]: stream,
+          };
+        });
+      };
+
+      // Connection state -> ICE restart / recreate
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        console.log(`PC[${sessionId}] connectionState = ${state}`);
+
+        if (state === 'disconnected' || state === 'failed') {
+          if (disconnectingRef.current) return;
+
+          // перезапускаем ICE, а если не поможет — пересоздаём
+          if (!iceRestartTimersRef.current[sessionId]) {
+            iceRestartTimersRef.current[sessionId] = setTimeout(async () => {
+              iceRestartTimersRef.current[sessionId] = null;
+              if (
+                pc.connectionState === 'connected' ||
+                pc.connectionState === 'connecting'
+              ) {
+                return;
+              }
+
+              try {
+                console.log(`PC[${sessionId}] restarting ICE...`);
+                pc.restartIce();
+              } catch (e) {
+                console.warn('restartIce error, recreating PC', e);
+                closePeerConnection(sessionId);
+                // пробуем инициировать заново, если этот peer всё ещё в participants
+                if (participants[sessionId]) {
+                  // инициатором будем мы
+                  initiateWebRTC(sessionId, { forceRelay: true });
+                }
+              }
+            }, 3_000);
+          }
+        }
+      };
+
+      peerConnectionsRef.current[sessionId] = pc;
+      return pc;
+    },
+    [closePeerConnection, participants, sendMessage],
+  );
+
+  /**
+   * Добавить локальные треки к PC (если ещё не добавлены)
+   */
+  const ensureLocalTracks = useCallback((pc) => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const senders = pc.getSenders();
+    const hasVideo = senders.some(
+      (s) => s.track && s.track.kind === 'video',
+    );
+    const hasAudio = senders.some(
+      (s) => s.track && s.track.kind === 'audio',
+    );
+    const tracks = [];
+
+    if (!hasAudio) {
+      stream.getAudioTracks().forEach((t) => tracks.push(t));
+    }
+    if (!hasVideo) {
+      stream.getVideoTracks().forEach((t) => tracks.push(t));
+    }
+
+    tracks.forEach((track) => {
+      pc.addTrack(track, stream);
+    });
+  }, []);
+
+  /**
+   * Создание offer для участника
+   */
+  const initiateWebRTC = useCallback(
+    async (targetId, options = {}) => {
+      try {
+        const pc = createPeerConnection(targetId);
+        ensureLocalTracks(pc);
+
+        // при жёстком деграде можем сразу уйти в relay-only
+        if (options.forceRelay) {
+          pc.getTransceivers().forEach((t) => {
+            if (t.setDirection) t.setDirection('sendrecv');
+          });
+        }
+
+        await applySenderBitrate(pc, videoProfile);
+        await applyAudioPriority(pc);
+
+        const offer = await pc.createOffer({
+          offerToReceiveAudio: true,
+          offerToReceiveVideo: true,
+        });
+        await pc.setLocalDescription(offer);
+
+        sendMessage({
+          type: 'offer',
+          offer: pc.localDescription.toJSON(),
+          receiver: targetId,
+        });
+
+        console.log('Sent offer to', targetId);
+      } catch (e) {
+        console.error('initiateWebRTC error', e);
+      }
+    },
+    [createPeerConnection, ensureLocalTracks, sendMessage, videoProfile],
+  );
+
+  /**
+   * Обработка входящего offer
+   */
+  const handleOffer = useCallback(
+    async (offer, senderId) => {
+      try {
+        const pc = createPeerConnection(senderId);
+        ensureLocalTracks(pc);
+
+        await pc.setRemoteDescription(new RTCSessionDescription(offer));
+        await applySenderBitrate(pc, videoProfile);
+        await applyAudioPriority(pc);
+
+        // применяем отложенные кандидаты
+        const pending = pendingCandidatesRef.current[senderId];
+        if (pending && pending.length > 0) {
+          for (const cand of pending) {
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch (e) {
+              console.warn('addIceCandidate (pending) error', e);
+            }
+          }
+          pendingCandidatesRef.current[senderId] = [];
+        }
+
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        sendMessage({
+          type: 'answer',
+          answer: pc.localDescription.toJSON(),
+          receiver: senderId,
+        });
+
+        console.log('Sent answer to', senderId);
+      } catch (e) {
+        console.error('handleOffer error', e);
+      }
+    },
+    [createPeerConnection, ensureLocalTracks, sendMessage, videoProfile],
+  );
+
+  /**
+   * Обработка входящего answer
+   */
+  const handleAnswer = useCallback(
+    async (answer, senderId) => {
+      try {
+        const pc = peerConnectionsRef.current[senderId];
+        if (!pc) {
+          console.warn('handleAnswer: PC not found for', senderId);
+          return;
+        }
+
+        if (pc.signalingState === 'have-local-offer') {
+          await pc.setRemoteDescription(
+            new RTCSessionDescription(answer),
+          );
+
+          const pending = pendingCandidatesRef.current[senderId];
+          if (pending && pending.length > 0) {
+            for (const cand of pending) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(cand));
+              } catch (e) {
+                console.warn('addIceCandidate (pending) error', e);
+              }
+            }
+            pendingCandidatesRef.current[senderId] = [];
+          }
+
+          console.log('Answer processed for', senderId);
+        } else {
+          console.log(
+            'Skipping answer for',
+            senderId,
+            'state=',
+            pc.signalingState,
+          );
+        }
+      } catch (e) {
+        console.error('handleAnswer error', e);
+      }
+    },
+    [],
+  );
+
+  /**
+   * Обработка ICE candidate
+   */
+  const handleCandidate = useCallback(async (candidate, senderId) => {
+    try {
+      const pc = peerConnectionsRef.current[senderId];
+
+      if (!pc || !pc.remoteDescription) {
+        if (!pendingCandidatesRef.current[senderId]) {
+          pendingCandidatesRef.current[senderId] = [];
+        }
+        pendingCandidatesRef.current[senderId].push(candidate);
+        return;
+      }
+
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) {
+      if (e.name !== 'InvalidStateError') {
+        console.error('handleCandidate error', e);
+      }
+    }
+  }, []);
+
+  /**
+   * Инициализация медиа + загрузка TURN-кредов
+   */
+  useEffect(() => {
+    if (!socket) {
+      return;
+    }
+
+    let mounted = true;
+    disconnectingRef.current = false;
+    nameSentRef.current = false;
+
+    // 1) тянем ICE/TURN
+    fetchIceServers().then((servers) => {
+      if (!mounted) return;
+      iceServersRef.current = servers;
+      console.log('ICE servers set:', servers);
+    });
+
+    // 2) запрашиваем медиа
+    const isMediaSupported =
+      !!navigator.mediaDevices && !!navigator.mediaDevices.getUserMedia;
+
+    if (!isMediaSupported) {
+      console.warn('mediaDevices not supported');
+      setIsAudioMuted(true);
+      setIsVideoMuted(true);
+      return;
+    }
+
+    const profile = VIDEO_PROFILES[videoProfile];
+
+    const requestMedia = async () => {
+      try {
+        let stream;
+        let audioAvailable = false;
+        let videoAvailable = false;
+
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: profile.constraints,
+          });
+
+          audioAvailable = stream.getAudioTracks().length > 0;
+          videoAvailable = stream.getVideoTracks().length > 0;
+        } catch (errBoth) {
+          console.warn(
+            'Failed to get both audio+video, trying separately:',
+            errBoth?.name,
+          );
+
+          const tracks = [];
+
+          try {
+            const a = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+            });
+            a.getAudioTracks().forEach((t) => tracks.push(t));
+            a.getVideoTracks().forEach((t) => t.stop());
+            audioAvailable = tracks.some((t) => t.kind === 'audio');
+          } catch (eA) {
+            console.warn('getUserMedia(audio) error:', eA?.name);
+          }
+
+          try {
+            const v = await navigator.mediaDevices.getUserMedia({
+              video: profile.constraints,
+            });
+            v.getVideoTracks().forEach((t) => tracks.push(t));
+            v.getAudioTracks().forEach((t) => t.stop());
+            videoAvailable = tracks.some((t) => t.kind === 'video');
+          } catch (eV) {
+            console.warn('getUserMedia(video) error:', eV?.name);
+          }
+
+          if (tracks.length === 0) {
+            throw new Error('No media tracks obtained');
+          }
+
+          stream = new MediaStream(tracks);
+        }
+
+        if (!mounted) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+
+        localStreamRef.current = stream;
+
+        // применяем начальные состояния
+        const finalAudio = initialAudioEnabled && audioAvailable;
+        const finalVideo = initialVideoEnabled && videoAvailable;
+
+        stream.getAudioTracks().forEach((t) => {
+          t.enabled = finalAudio;
+        });
+        stream.getVideoTracks().forEach((t) => {
+          t.enabled = finalVideo;
+        });
+
+        setIsAudioMuted(!finalAudio);
+        setIsVideoMuted(!finalVideo);
+        mediaInitializedRef.current = true;
+
+        try {
+          // Применяем HD-профиль прямо к локальному треку
+          const vTrack = stream.getVideoTracks()[0];
+          if (vTrack) {
+            await vTrack.applyConstraints(VIDEO_PROFILES.hd.constraints);
+          }
+        
+          // Обновляем битрейт на всех активных PeerConnection
+          const pcs = Object.values(peerConnectionsRef.current);
+          await Promise.allSettled(
+            pcs.map((pc) => applySenderBitrate(pc, 'hd'))
+          );
+        
+          setVideoProfile('hd');
+          console.log('VideoCall: Applied initial HD profile');
+        } catch (e) {
+          console.warn('VideoCall: Failed to apply initial HD profile', e);
+        }
+        
+        
+
+        if (localVideoRef.current && videoAvailable) {
+          localVideoRef.current.srcObject = stream;
+        }
+
+        // рассылаем статус, если уже есть ID
+        if (clientIdRef.current && socketRef.current?.readyState === WebSocket.OPEN) {
+          sendMessage({
+            type: 'media-status',
+            audioEnabled: finalAudio,
+            videoEnabled: finalVideo,
+          });
+        }
+      } catch (e) {
+        console.error('requestMedia error', e);
+        setIsAudioMuted(true);
+        setIsVideoMuted(true);
+      }
+    };
+
+    requestMedia();
+
+    return () => {
+      mounted = false;
+
+      // отправляем leave
+      if (
+        !disconnectingRef.current &&
+        socketRef.current?.readyState === WebSocket.OPEN
+      ) {
+        disconnectingRef.current = true;
+        try {
+          socketRef.current.send(JSON.stringify({ type: 'leave' }));
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      // останавливаем локальный стрим
+      if (localStreamRef.current) {
+        localStreamRef.current
+          .getTracks()
+          .forEach((t) => t.stop());
+        localStreamRef.current = null;
+      }
+      mediaInitializedRef.current = false;
+
+      // закрываем все PC
+      Object.keys(peerConnectionsRef.current).forEach((id) =>
+        closePeerConnection(id),
+      );
+
+      // стопим stats
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current);
+        statsIntervalRef.current = null;
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [socket]);
+
+  /**
+   * Обработка WebSocket-сообщений
+   */
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleMessage = async (event) => {
+      let data;
+      try {
+        data = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+
+      const { type, sender } = data;
+
+      // маршрутизация по типу
+      switch (type) {
+        case 'your-id': {
+          const myId = data.sessionId;
+          clientIdRef.current = myId;
+          console.log('Your ID:', myId);
+
+          if (!nameSentRef.current) {
+            nameSentRef.current = true;
+            sendMessage({
+              type: 'set-name',
+              name: userNameRef.current || 'Гость',
+            });
+
+            // после регистрации отправляем текущий media-status
+            setTimeout(() => {
+              if (!mediaInitializedRef.current) return;
+              const stream = localStreamRef.current;
+              const audioEnabled =
+                stream?.getAudioTracks()[0]?.enabled ?? false;
+              const videoEnabled =
+                stream?.getVideoTracks()[0]?.enabled ?? false;
+              sendMessage({
+                type: 'media-status',
+                audioEnabled,
+                videoEnabled,
+              });
+            }, 100);
+          }
+          break;
+        }
+
+        case 'participants': {
+          const items = data.items || [];
+          const myId = clientIdRef.current;
+          const map = {};
+
+          items.forEach((p) => {
+            if (p.sessionId === myId) return;
+            map[p.sessionId] = {
+              userName: p.userName,
+              audioEnabled: p.audioEnabled === true,
+              videoEnabled: p.videoEnabled === true,
+            };
+          });
+
+          setParticipants(map);
+          break;
+        }
+
+        case 'new-user': { 
+          // Сервер шлёт new-user только другим, не себе, так что myId не нужен 
+          const targetId = data.sessionId; 
+ 
+          // Если вдруг уже есть PC (повторное событие) — не плодим соединения 
+          if (peerConnectionsRef.current[targetId]) { 
+            console.log('new-user: PC already exists for', targetId); 
+            break; 
+          } 
+ 
+          console.log('new-user: initiating WebRTC with', targetId); 
+          setTimeout(() => { 
+            initiateWebRTC(targetId); 
+          }, 400); 
+          break; 
+        }
+
+        case 'user-left': {
+          const leftId = data.sessionId;
+          closePeerConnection(leftId);
+          setParticipants((prev) => {
+            const next = { ...prev };
+            delete next[leftId];
+            return next;
+          });
+          break;
+        }
+
+        case 'offer':
+          if (data.receiver && data.receiver !== clientIdRef.current) {
+            return;
+          }
+          await handleOffer(data.offer, sender);
+          break;
+
+        case 'answer':
+          if (data.receiver && data.receiver !== clientIdRef.current) {
+            return;
+          }
+          await handleAnswer(data.answer, sender);
+          break;
+
+        case 'candidate':
+          if (data.receiver && data.receiver !== clientIdRef.current) {
+            return;
+          }
+          await handleCandidate(data.candidate, sender);
+          break;
+
+        default:
+          break;
+      }
+    };
+
+    const handleClose = () => {
+      console.log('VideoCall: WebSocket closed');
+      if (!disconnectingRef.current) {
+        onLeaveRef.current?.();
+      }
+    };
+
+    socket.addEventListener('message', handleMessage);
+    socket.addEventListener('close', handleClose);
+
+    return () => {
+      socket.removeEventListener('message', handleMessage);
+      socket.removeEventListener('close', handleClose);
+    };
+  }, [socket, sendMessage, handleOffer, handleAnswer, handleCandidate, closePeerConnection, initiateWebRTC]);
+
+  /**
+   * Передаём список участников наверх
+   */
+  useEffect(() => {
+    const list = Object.entries(participants).map(([id, p]) => ({
+      id,
+      name: p.userName || 'Участник',
+      audioEnabled: p.audioEnabled,
+      videoEnabled: p.videoEnabled,
+    }));
+    onParticipantsChange?.(list);
+  }, [participants, onParticipantsChange]);
+
+  /**
+   * Уведомляем родителя о локальном медиа
+   */
+  useEffect(() => {
+    onLocalMediaChange?.(!isAudioMuted, !isVideoMuted);
+  }, [isAudioMuted, isVideoMuted, onLocalMediaChange]);
+
+  /**
+   * Периодический сбор WebRTC stats для сети + адаптация профиля
+   */
+  useEffect(() => {
+    const anyPc =
+      Object.values(peerConnectionsRef.current)[0] || null;
+    if (!anyPc || statsIntervalRef.current) return;
+
+    statsIntervalRef.current = setInterval(async () => {
+      const pc = Object.values(peerConnectionsRef.current)[0];
+      if (!pc) return;
+
+      try {
+        const stats = await pc.getStats();
+        let rtcRttMs = null;
+        let lossPct = null;
+        let outKbps = null;
+
+        let bytesSent = 0;
+        let packetsSent = 0;
+        let packetsLost = 0;
+
+        stats.forEach((report) => {
+          if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+            if (report.currentRoundTripTime != null) {
+              rtcRttMs = Math.round(report.currentRoundTripTime * 1000);
+            }
+          }
+
+          if (
+            report.type === 'outbound-rtp' &&
+            !report.isRemote &&
+            report.kind === 'video'
+          ) {
+            bytesSent += report.bytesSent || 0;
+            packetsSent += report.packetsSent || 0;
+            packetsLost += report.packetsLost || 0;
+          }
+        });
+
+        const now = Date.now();
+        let kbps = null;
+        if (bytesSent > 0) {
+          const prev = prevOutboundRef.current;
+          const deltaBytes = bytesSent - (prev.bytesSent || 0);
+          const deltaMs = now - (prev.timestamp || now);
+          if (deltaMs > 200) {
+            kbps = Math.round((deltaBytes * 8) / deltaMs);
+            prevOutboundRef.current = {
+              bytesSent,
+              timestamp: now,
+            };
+          }
+        }
+
+        if (packetsSent > 0) {
+          lossPct = Number(
+            ((packetsLost / (packetsSent + packetsLost)) * 100).toFixed(
+              1,
+            ),
+          );
+        }
+
+        const level = classifyNetLevel({ rtcRttMs, lossPct });
+
+        setNet((prev) => ({
+          ...prev,
+          rtcRttMs,
+          lossPct,
+          outKbps: kbps,
+          level,
+        }));
+
+        // простая адаптация профиля
+        if (level === 'bad' && videoProfile !== 'low') {
+          setVideoProfile('low');
+          await applySenderBitrate(pc, 'low');
+        } else if (level === 'meh' && videoProfile === 'hd') {
+          setVideoProfile('med');
+          await applySenderBitrate(pc, 'med');
+        } else if (level === 'ok' && videoProfile !== 'hd') {
+          // осторожный апгрейд
+          setVideoProfile('hd');
+          await applySenderBitrate(pc, 'hd');
+        }
+      } catch (e) {
+        console.warn('getStats error', e);
+      }
+    }, 3_000);
+
+    return () => {
+      if (statsIntervalRef.current) {
+        clearInterval(statsIntervalRef.current);
+        statsIntervalRef.current = null;
+      }
+    };
+  }, [videoProfile]);
+
+  /**
+   * Переключение микрофона
+   */
+  const toggleAudio = useCallback(async () => {
+    if (isTogglingAudio) return;
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn('toggleAudio: no local stream');
+      return;
+    }
+
+    const tracks = stream.getAudioTracks();
+    if (!tracks.length) {
+      console.warn('toggleAudio: no audio tracks');
+      return;
+    }
+
+    setIsTogglingAudio(true);
+    try {
+      const current = tracks[0].enabled;
+      const next = !current;
+
+      tracks.forEach((t) => {
+        t.enabled = next;
+      });
+
+      setIsAudioMuted(!next);
+      sendMessage({
+        type: 'media-status',
+        audioEnabled: next,
+        videoEnabled: !isVideoMuted,
+      });
+    } finally {
+      setIsTogglingAudio(false);
+    }
+  }, [isTogglingAudio, isVideoMuted, sendMessage]);
+
+  /**
+   * Переключение камеры
+   */
+  const toggleVideo = useCallback(async () => {
+    if (isTogglingVideo) return;
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn('toggleVideo: no local stream');
+      return;
+    }
+
+    const tracks = stream.getVideoTracks();
+    if (!tracks.length) {
+      console.warn('toggleVideo: no video tracks');
+      return;
+    }
+
+    setIsTogglingVideo(true);
+    try {
+      const current = tracks[0].enabled;
+      const next = !current;
+
+      tracks.forEach((t) => {
+        t.enabled = next;
+      });
+
+      setIsVideoMuted(!next);
+      sendMessage({
+        type: 'media-status',
+        audioEnabled: !isAudioMuted,
+        videoEnabled: next,
+      });
+    } finally {
+      setIsTogglingVideo(false);
+    }
+  }, [isTogglingVideo, isAudioMuted, sendMessage]);
+
+  /**
+   * Выход из встречи
+   */
+  const leaveMeeting = useCallback(() => {
+    disconnectingRef.current = true;
+
+    if (socketRef.current?.readyState === WebSocket.OPEN) {
+      try {
+        socketRef.current.send(JSON.stringify({ type: 'leave' }));
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    Object.keys(peerConnectionsRef.current).forEach((id) =>
+      closePeerConnection(id),
+    );
+    setRemoteStreams({});
+    setParticipants({});
+    onLeaveRef.current?.();
+  }, [closePeerConnection]);
+
+  const participantIds = Object.keys(participants);
+
+  return (
+    <div className="video-call-container">
+      {/* Плашка сети */}
+      <div className={`network-indicator network-indicator--${net.level}`}>
+        <div className="network-indicator__title">
+          Сеть:{' '}
+          {net.level === 'ok'
+            ? 'норма'
+            : net.level === 'meh'
+            ? 'нестабильно'
+            : 'плохо'}
+        </div>
+        <div className="network-indicator__row">
+          RTC RTT: {net.rtcRttMs ?? '—'} ms
+        </div>
+        <div className="network-indicator__row">
+          Потери: {net.lossPct ?? '—'}%
+        </div>
+        <div className="network-indicator__row">
+          Исходящее: {net.outKbps ?? '—'} kbps
+        </div>
+        <div className="network-indicator__row">
+          Профиль: {videoProfile.toUpperCase()}
+        </div>
+      </div>
+
+      <div className="video-grid">
+        {/* Локальное видео */}
+        <div className="video-item">
+          <video ref={localVideoRef} autoPlay muted playsInline />
+          <div className="user-name-overlay">{userName || 'Вы'}</div>
+          <div className="media-badges">
+            <span className={`badge ${isAudioMuted ? 'muted' : ''}`}>
+              <i
+                className={`fas ${
+                  isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'
+                }`}
+              />
+            </span>
+            <span className={`badge ${isVideoMuted ? 'muted' : ''}`}>
+              <i
+                className={`fas ${
+                  isVideoMuted ? 'fa-video-slash' : 'fa-video'
+                }`}
+              />
+            </span>
+          </div>
+        </div>
+
+        {/* Удалённые участники */}
+        {participantIds.map((id) => (
+          <ParticipantTile
+            key={id}
+            stream={remoteStreams[id]}
+            participant={participants[id]}
+          />
+        ))}
+      </div>
+
+      <div className="controls-row">
+        <div className="controls">
+          <button
+            onClick={toggleAudio}
+            disabled={isTogglingAudio}
+            className={isAudioMuted ? 'muted-btn' : ''}
+            title={
+              isAudioMuted ? 'Включить микрофон' : 'Выключить микрофон'
+            }
+          >
+            <i
+              className={`fas ${
+                isAudioMuted ? 'fa-microphone-slash' : 'fa-microphone'
+              }`}
+            />
+          </button>
+          <button
+            onClick={toggleVideo}
+            disabled={isTogglingVideo}
+            className={isVideoMuted ? 'muted-btn' : ''}
+            title={isVideoMuted ? 'Включить камеру' : 'Выключить камеру'}
+          >
+            <i
+              className={`fas ${
+                isVideoMuted ? 'fa-video-slash' : 'fa-video'
+              }`}
+            />
+          </button>
+          <button className="danger" onClick={leaveMeeting}>
+            <i className="fas fa-phone-slash" /> Покинуть встречу
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export default VideoCall;

@@ -16,19 +16,21 @@ import '@fortawesome/fontawesome-free/css/all.min.css';
 
 // TURN/STUN сервера для WebRTC
 const ICE_SERVERS = [
-  { urls: 'stun:stun.l.google.com:19302' },
-  { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
+  // один локальный STUN через coturn
+  { urls: 'stun:nikg.tech:3478' },
+
+  // сам TURN (udp + tcp)
   {
     urls: [
       'turn:nikg.tech:3478?transport=udp',
-      'turns:nikg.tech:5349?transport=tcp',
+      'turn:nikg.tech:3478?transport=tcp',
     ],
     username: 'corduser',
     credential: 'pX4f3JqN9vC7wR2d',
   },
+
+  // как fallback
+  // { urls: 'stun:stun.l.google.com:19302' },
 ];
 
 // Видео-профили по качеству
@@ -56,6 +58,15 @@ const VIDEO_PROFILES = {
       frameRate: { ideal: 24, max: 30 },
     },
     maxBitrate: 1_200_000,
+  },
+  // ВРЕМЕННО: 1080p 60fps для тестирования
+  fullhd: {
+    constraints: {
+      width: { ideal: 1920, max: 1920 },
+      height: { ideal: 1080, max: 1080 },
+      frameRate: { ideal: 60, max: 60 },
+    },
+    maxBitrate: 3_000_000, // 3 Mbps для 1080p 60fps
   },
 };
 
@@ -120,7 +131,9 @@ function VideoCall({
   const [isTogglingAudio, setIsTogglingAudio] = useState(false);
   const [isTogglingVideo, setIsTogglingVideo] = useState(false);
 
-  const [videoProfile, setVideoProfile] = useState('med'); // текущий профиль
+  // ВРЕМЕННО: фиксированный профиль 1080p 60fps для тестирования
+  const [videoProfile, setVideoProfile] = useState('fullhd'); // текущий профиль
+  // const [videoProfile, setVideoProfile] = useState('hd'); // текущий профиль
   const [net, setNet] = useState({
     wsRttMs: null,
     rtcRttMs: null,
@@ -130,6 +143,7 @@ function VideoCall({
   });
 
   const prevOutboundRef = useRef({});
+  const qualityUpgradeCounterRef = useRef(0); // Счетчик для постепенного улучшения качества
 
 
   // Синхронизируем refs
@@ -290,6 +304,7 @@ function VideoCall({
   }, []);
 
   const setProfile = useCallback(async (profileKey) => {
+    console.log(`VideoCall: Установка профиля ${profileKey.toUpperCase()}`);
     setVideoProfile(profileKey);
   
     const stream = localStreamRef.current;
@@ -297,6 +312,7 @@ function VideoCall({
     if (vTrack) {
       try {
         await vTrack.applyConstraints(VIDEO_PROFILES[profileKey].constraints);
+        console.log(`VideoCall: Constraints применены для профиля ${profileKey}`);
       } catch (e) {
         console.warn('Failed to apply constraints for profile', profileKey, e);
       }
@@ -306,6 +322,7 @@ function VideoCall({
     await Promise.allSettled(
       pcs.map((pc) => applySenderBitrate(pc, profileKey))
     );
+    console.log(`VideoCall: Битрейт применен для всех ${pcs.length} peer connections`);
   }, []);
 
   useEffect(() => {
@@ -387,12 +404,37 @@ function VideoCall({
         level,
       }));
   
-      // авто-деградация профиля
+      // ВРЕМЕННО ОТКЛЮЧЕНО: авто-адаптация профиля для тестирования 1080p 60fps
+      // Фиксированное качество fullhd, адаптация отключена
+      /*
       if (level === 'bad' && videoProfile !== 'low') {
+        qualityUpgradeCounterRef.current = 0;
         setProfile('low');
       } else if (level === 'meh' && videoProfile === 'hd') {
+        qualityUpgradeCounterRef.current = 0;
         setProfile('med');
+      } else if (level === 'ok') {
+        if (videoProfile === 'low') {
+          qualityUpgradeCounterRef.current++;
+          if (qualityUpgradeCounterRef.current >= 2) {
+            console.log('Улучшение качества: low -> med');
+            qualityUpgradeCounterRef.current = 0;
+            setProfile('med');
+          }
+        } else if (videoProfile === 'med') {
+          qualityUpgradeCounterRef.current++;
+          if (qualityUpgradeCounterRef.current >= 3) {
+            console.log('Улучшение качества: med -> hd');
+            qualityUpgradeCounterRef.current = 0;
+            setProfile('hd');
+          }
+        } else if (videoProfile === 'hd') {
+          qualityUpgradeCounterRef.current = 0;
+        }
+      } else {
+        qualityUpgradeCounterRef.current = 0;
       }
+      */
     }, 2000);
   
     return () => clearInterval(interval);
@@ -612,34 +654,49 @@ function VideoCall({
         let videoAvailable = false;
         
         try {
-          // Пытаемся получить оба устройства
-          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          // ВРЕМЕННО: получаем оба устройства с 1080p 60fps профилем
+          stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              autoGainControl: true,
+            },
+            video: VIDEO_PROFILES.fullhd.constraints,
+          });
           audioAvailable = stream.getAudioTracks().length > 0;
           videoAvailable = stream.getVideoTracks().length > 0;
-          console.log('VideoCall: Оба устройства получены:', { audio: audioAvailable, video: videoAvailable });
+          console.log('VideoCall: Оба устройства получены с 1080p 60fps профилем (FULLHD):', { audio: audioAvailable, video: videoAvailable });
         } catch (err) {
           // Если не удалось получить оба, пробуем по отдельности
           console.log('VideoCall: Не удалось получить оба устройства, пробуем по отдельности...', err.name);
           
           const tracks = [];
           
-          // Пробуем получить аудио
+          // Пробуем получить аудио с оптимальными настройками
           try {
-            const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const audioStream = await navigator.mediaDevices.getUserMedia({ 
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              }
+            });
             tracks.push(...audioStream.getAudioTracks());
             audioAvailable = true;
-            console.log('VideoCall: Аудио получено');
+            console.log('VideoCall: Аудио получено с оптимальными настройками');
             audioStream.getVideoTracks().forEach(t => t.stop());
           } catch (audioErr) {
             console.warn('VideoCall: Не удалось получить аудио:', audioErr.name);
           }
           
-          // Пробуем получить видео
+          // ВРЕМЕННО: пробуем получить видео с 1080p 60fps профилем
           try {
-            const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const videoStream = await navigator.mediaDevices.getUserMedia({ 
+              video: VIDEO_PROFILES.fullhd.constraints 
+            });
             tracks.push(...videoStream.getVideoTracks());
             videoAvailable = true;
-            console.log('VideoCall: Видео получено');
+            console.log('VideoCall: Видео получено с 1080p 60fps профилем');
             videoStream.getAudioTracks().forEach(t => t.stop());
           } catch (videoErr) {
             console.warn('VideoCall: Не удалось получить видео:', videoErr.name);
@@ -1070,7 +1127,7 @@ function VideoCall({
       <div className="video-grid">
         {/* Локальное видео */}
         <div className="video-item">
-          <video ref={localVideoRef} autoPlay muted playsInline />
+          {/* <video ref={localVideoRef} autoPlay muted playsInline className="local-video-mirror" /> */}
           <div className="user-name-overlay">{userName || 'Вы'}</div>
           <div className="media-badges">
             <span className={`badge ${isAudioMuted ? 'muted' : ''}`}>

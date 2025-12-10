@@ -51,14 +51,14 @@ function Home() {
           <div className="panel">
             <h3>Создать встречу</h3>
             <p className="helper">Мы создадим комнату и сгенерируем ID — просто поделитесь им с участниками.</p>
-            <label className="field-label" htmlFor="creator-name">Ваше имя</label>
-            <input
+            {/* <label className="field-label" htmlFor="creator-name">Ваше имя</label> */}
+            {/* <input
               id="creator-name"
               type="text"
               placeholder="Например, Мария Иванова"
               value={name}
               onChange={(e) => setName(e.target.value)}
-            />
+            /> */}
             <button className="primary" onClick={handleCreateMeeting} disabled={loading}>
               {loading ? 'Создаём…' : 'Создать встречу'}
             </button>

@@ -25,5 +25,14 @@ export const VIDEO_PROFILES = {
       },
       maxBitrate: 1_200_000,
     },
+    // ВРЕМЕННО: 1080p 60fps для тестирования
+    fullhd: {
+      constraints: {
+        width: { ideal: 1920, max: 1920 },
+        height: { ideal: 1080, max: 1080 },
+        frameRate: { ideal: 60, max: 60 },
+      },
+      maxBitrate: 3_000_000, // 3 Mbps для 1080p 60fps
+    },
   };
   

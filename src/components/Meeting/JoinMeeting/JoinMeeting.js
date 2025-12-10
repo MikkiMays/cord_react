@@ -54,15 +54,15 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
           // });
 
           // Пытаемся получить оба устройства
-          // Пытаемся получить оба устройства c ограничениями для среднего профиля
-          stream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-              echoCancellation: true,
-              noiseSuppression: true,
-              autoGainControl: true,
-            },
-            video: VIDEO_PROFILES.med.constraints,
-          });
+           // ВРЕМЕННО: получаем устройства с 1080p 60fps профилем для тестирования
+           stream = await navigator.mediaDevices.getUserMedia({
+             audio: {
+               echoCancellation: true,
+               noiseSuppression: true,
+               autoGainControl: true,
+             },
+             video: VIDEO_PROFILES.fullhd.constraints,
+           });
 
 
           audioAvailable = stream.getAudioTracks().length > 0;
