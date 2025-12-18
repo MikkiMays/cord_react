@@ -26,6 +26,11 @@
   object-fit: cover;
 }
 
+/* Зеркальное отображение для превью видео */
+.preview video.preview-video-mirror {
+  transform: scaleX(-1) !important;
+}
+
 .preview .controls {
   position: absolute;
   bottom: 16px;
@@ -76,6 +81,18 @@
 
 .preview .controls button.muted:hover:not(:disabled) {
   background-color: rgba(220, 60, 60, 0.9);
+}
+
+.preview .controls button.switch-camera-btn {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+.preview .controls button.switch-camera-btn:hover:not(:disabled) {
+  background-color: rgba(0, 0, 0, 0.9);
+}
+
+.preview .controls button.switch-camera-btn:disabled {
+  opacity: 0.3;
 }
 
 .placeholder-video {

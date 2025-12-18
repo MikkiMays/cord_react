@@ -21,6 +21,7 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
   const [audioAvailable, setAudioAvailable] = useState(false);
   const videoRef = useRef(null);
   const localStreamRef = useRef(null);
+  const facingModeRef = useRef('user'); // 'user' (фронтальная) или 'environment' (задняя)
 
   /**
    * Запрашиваем разрешение на медиа СРАЗУ при загрузке компонента
@@ -61,7 +62,10 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
                noiseSuppression: true,
                autoGainControl: true,
              },
-             video: VIDEO_PROFILES.fullhd.constraints,
+             video: {
+               ...VIDEO_PROFILES.fullhd.constraints,
+               facingMode: facingModeRef.current,
+             },
            });
 
 
@@ -95,7 +99,11 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
 
           // Пробуем получить видео
           try {
-            const videoStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const videoStream = await navigator.mediaDevices.getUserMedia({ 
+              video: {
+                facingMode: facingModeRef.current,
+              }
+            });
             tracks.push(...videoStream.getVideoTracks());
             videoAvailable = true;
             console.log('Видео получено');
@@ -230,6 +238,8 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
     if (videoRef.current) {
       if (newState) {
         videoRef.current.srcObject = localStreamRef.current;
+        // Применяем зеркальное отображение для превью
+        videoRef.current.style.transform = 'scaleX(-1)';
       } else {
         videoRef.current.srcObject = null;
       }
@@ -237,6 +247,71 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
 
     setIsVideoOn(newState);
     console.log('Камера:', newState ? 'включена' : 'выключена');
+  };
+
+  /**
+   * Переключение между фронтальной и задней камерой
+   */
+  const switchCamera = async () => {
+    if (!localStreamRef.current) {
+      console.warn('switchCamera: поток не инициализирован');
+      return;
+    }
+
+    const videoTracks = localStreamRef.current.getVideoTracks();
+    if (videoTracks.length === 0) {
+      console.warn('switchCamera: нет видео треков');
+      return;
+    }
+
+    try {
+      // Переключаем facingMode
+      const currentFacingMode = facingModeRef.current;
+      const newFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+      facingModeRef.current = newFacingMode;
+
+      console.log(`Переключение камеры в превью: ${currentFacingMode} -> ${newFacingMode}`);
+
+      const wasEnabled = videoTracks[0].enabled;
+
+      // Останавливаем старый трек
+      videoTracks.forEach((track) => {
+        track.stop();
+      });
+
+      // Получаем новый поток с другой камерой
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          ...VIDEO_PROFILES.fullhd.constraints,
+          facingMode: newFacingMode,
+        },
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      
+      // Заменяем трек в локальном потоке
+      localStreamRef.current.removeTrack(videoTracks[0]);
+      localStreamRef.current.addTrack(newVideoTrack);
+      
+      // Останавливаем временный поток
+      newStream.getAudioTracks().forEach((t) => t.stop());
+
+      // Применяем предыдущее состояние
+      newVideoTrack.enabled = wasEnabled;
+
+      // Обновляем видео элемент
+      if (videoRef.current && wasEnabled) {
+        videoRef.current.srcObject = localStreamRef.current;
+        videoRef.current.style.transform = 'scaleX(-1)';
+      }
+
+      console.log(`Камера переключена на: ${newFacingMode}`);
+    } catch (error) {
+      console.error('Ошибка переключения камеры:', error);
+      // Возвращаемся к предыдущему состоянию при ошибке
+      facingModeRef.current = facingModeRef.current === 'user' ? 'environment' : 'user';
+    }
   };
 
   const handleSubmit = (e) => {
@@ -269,7 +344,11 @@ function JoinMeeting({ defaultName = '', onJoin, loading, error, disabled = fals
           autoPlay
           muted
           playsInline
-          style={{ display: isVideoOn && permissionGranted ? 'block' : 'none' }}
+          className="preview-video-mirror"
+          style={{ 
+            display: isVideoOn && permissionGranted ? 'block' : 'none',
+            transform: 'scaleX(-1)'
+          }}
         />
         {/* Плейсхолдер с аватаром, когда видео выключено */}
         {(!isVideoOn || !permissionGranted) && (

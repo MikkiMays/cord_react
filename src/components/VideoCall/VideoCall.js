@@ -59,7 +59,6 @@ const VIDEO_PROFILES = {
     },
     maxBitrate: 1_200_000,
   },
-  // ВРЕМЕННО: 1080p 60fps для тестирования
   fullhd: {
     constraints: {
       width: { ideal: 1920, max: 1920 },
@@ -131,9 +130,9 @@ function VideoCall({
   const [isTogglingAudio, setIsTogglingAudio] = useState(false);
   const [isTogglingVideo, setIsTogglingVideo] = useState(false);
 
-  // ВРЕМЕННО: фиксированный профиль 1080p 60fps для тестирования
+  // Профиль качества видео
   const [videoProfile, setVideoProfile] = useState('fullhd'); // текущий профиль
-  // const [videoProfile, setVideoProfile] = useState('hd'); // текущий профиль
+  const [qualityMode, setQualityMode] = useState('auto'); // 'auto' или 'manual' (low, med, hd, fullhd)
   const [net, setNet] = useState({
     wsRttMs: null,
     rtcRttMs: null,
@@ -144,6 +143,7 @@ function VideoCall({
 
   const prevOutboundRef = useRef({});
   const qualityUpgradeCounterRef = useRef(0); // Счетчик для постепенного улучшения качества
+  const facingModeRef = useRef('user'); // 'user' (фронтальная) или 'environment' (задняя)
 
 
   // Синхронизируем refs
@@ -158,6 +158,21 @@ function VideoCall({
   useEffect(() => {
     onLeaveRef.current = onLeave;
   }, [onLeave]);
+
+  // Применяем зеркальное отображение для локального видео
+  useEffect(() => {
+    const applyMirror = () => {
+      if (localVideoRef.current) {
+        localVideoRef.current.style.transform = 'scaleX(-1)';
+        localVideoRef.current.style.webkitTransform = 'scaleX(-1)';
+      }
+    };
+    
+    applyMirror();
+    // Применяем также периодически, чтобы гарантировать применение
+    const interval = setInterval(applyMirror, 500);
+    return () => clearInterval(interval);
+  }, []);
 
   /**
    * Отправка JSON через WebSocket (стабильная функция через ref)
@@ -395,7 +410,19 @@ function VideoCall({
       } else if ((maxRttMs != null && maxRttMs > 350) || lossPct > 5 || (minOutKbps != null && minOutKbps < 250)) {
         level = 'meh';
       }
-  
+
+      // Логируем для отладки авто-адаптации
+      if (qualityMode === 'auto') {
+        console.log('Auto quality check:', { 
+          level, 
+          maxRttMs, 
+          lossPct, 
+          minOutKbps, 
+          currentProfile: videoProfile,
+          upgradeCounter: qualityUpgradeCounterRef.current 
+        });
+      }
+
       setNet((prev) => ({
         ...prev,
         rtcRttMs: maxRttMs != null ? Math.round(maxRttMs) : prev.rtcRttMs,
@@ -404,41 +431,54 @@ function VideoCall({
         level,
       }));
   
-      // ВРЕМЕННО ОТКЛЮЧЕНО: авто-адаптация профиля для тестирования 1080p 60fps
-      // Фиксированное качество fullhd, адаптация отключена
-      /*
-      if (level === 'bad' && videoProfile !== 'low') {
-        qualityUpgradeCounterRef.current = 0;
-        setProfile('low');
-      } else if (level === 'meh' && videoProfile === 'hd') {
-        qualityUpgradeCounterRef.current = 0;
-        setProfile('med');
-      } else if (level === 'ok') {
-        if (videoProfile === 'low') {
-          qualityUpgradeCounterRef.current++;
-          if (qualityUpgradeCounterRef.current >= 2) {
-            console.log('Улучшение качества: low -> med');
+      // Авто-адаптация профиля (только если режим 'auto')
+      if (qualityMode === 'auto') {
+        if (level === 'bad' && videoProfile !== 'low') {
+          qualityUpgradeCounterRef.current = 0;
+          setProfile('low');
+        } else if (level === 'meh' && videoProfile === 'hd') {
+          qualityUpgradeCounterRef.current = 0;
+          setProfile('med');
+        } else if (level === 'meh' && videoProfile === 'fullhd') {
+          qualityUpgradeCounterRef.current = 0;
+          setProfile('hd');
+        } else if (level === 'ok') {
+          // Более агрессивное улучшение качества при хорошей сети
+          if (videoProfile === 'low') {
+            qualityUpgradeCounterRef.current++;
+            if (qualityUpgradeCounterRef.current >= 1) {
+              console.log('Улучшение качества: low -> med');
+              qualityUpgradeCounterRef.current = 0;
+              setProfile('med');
+            }
+          } else if (videoProfile === 'med') {
+            qualityUpgradeCounterRef.current++;
+            if (qualityUpgradeCounterRef.current >= 2) {
+              console.log('Улучшение качества: med -> hd');
+              qualityUpgradeCounterRef.current = 0;
+              setProfile('hd');
+            }
+          } else if (videoProfile === 'hd') {
+            qualityUpgradeCounterRef.current++;
+            if (qualityUpgradeCounterRef.current >= 2) {
+              console.log('Улучшение качества: hd -> fullhd');
+              qualityUpgradeCounterRef.current = 0;
+              setProfile('fullhd');
+            }
+          } else if (videoProfile === 'fullhd') {
             qualityUpgradeCounterRef.current = 0;
-            setProfile('med');
           }
-        } else if (videoProfile === 'med') {
-          qualityUpgradeCounterRef.current++;
-          if (qualityUpgradeCounterRef.current >= 3) {
-            console.log('Улучшение качества: med -> hd');
-            qualityUpgradeCounterRef.current = 0;
-            setProfile('hd');
-          }
-        } else if (videoProfile === 'hd') {
+        } else {
           qualityUpgradeCounterRef.current = 0;
         }
       } else {
+        // В ручном режиме сбрасываем счетчик
         qualityUpgradeCounterRef.current = 0;
       }
-      */
     }, 2000);
   
     return () => clearInterval(interval);
-  }, [setProfile, videoProfile]);
+  }, [setProfile, videoProfile, qualityMode]);
   
 
   useEffect(() => {
@@ -654,14 +694,17 @@ function VideoCall({
         let videoAvailable = false;
         
         try {
-          // ВРЕМЕННО: получаем оба устройства с 1080p 60fps профилем
+          // ВРЕМЕННО: получаем оба устройства с ultrahd профилем
           stream = await navigator.mediaDevices.getUserMedia({ 
             audio: {
               echoCancellation: true,
               noiseSuppression: true,
               autoGainControl: true,
             },
-            video: VIDEO_PROFILES.fullhd.constraints,
+            video: {
+              ...VIDEO_PROFILES.fullhd.constraints,
+              facingMode: facingModeRef.current, // Используем сохраненный facingMode
+            },
           });
           audioAvailable = stream.getAudioTracks().length > 0;
           videoAvailable = stream.getVideoTracks().length > 0;
@@ -692,7 +735,10 @@ function VideoCall({
           // ВРЕМЕННО: пробуем получить видео с 1080p 60fps профилем
           try {
             const videoStream = await navigator.mediaDevices.getUserMedia({ 
-              video: VIDEO_PROFILES.fullhd.constraints 
+              video: {
+                ...VIDEO_PROFILES.fullhd.constraints,
+                facingMode: facingModeRef.current,
+              }
             });
             tracks.push(...videoStream.getVideoTracks());
             videoAvailable = true;
@@ -726,6 +772,8 @@ function VideoCall({
         localStreamRef.current = stream;
         if (localVideoRef.current && videoAvailable) {
           localVideoRef.current.srcObject = stream;
+          // Применяем зеркальное отображение для локального видео
+          localVideoRef.current.style.transform = 'scaleX(-1)';
         }
 
         // Применяем начальные настройки (только для доступных устройств)
@@ -1047,6 +1095,89 @@ function VideoCall({
   }, [isTogglingVideo, isAudioMuted, sendMediaStatus]);
 
   /**
+   * Переключение между фронтальной и задней камерой
+   */
+  const switchCamera = useCallback(async () => {
+    if (isTogglingVideo) return;
+    
+    const stream = localStreamRef.current;
+    if (!stream) {
+      console.warn('switchCamera: Local stream not initialized');
+      return;
+    }
+
+    const videoTracks = stream.getVideoTracks();
+    if (videoTracks.length === 0) {
+      console.warn('switchCamera: No video tracks');
+      return;
+    }
+
+    setIsTogglingVideo(true);
+    
+    try {
+      // Переключаем facingMode
+      const currentFacingMode = facingModeRef.current;
+      const newFacingMode = currentFacingMode === 'user' ? 'environment' : 'user';
+      facingModeRef.current = newFacingMode;
+
+      console.log(`Переключение камеры: ${currentFacingMode} -> ${newFacingMode}`);
+
+      // Получаем текущий профиль качества
+      const currentProfile = VIDEO_PROFILES[videoProfile];
+      const wasEnabled = videoTracks[0].enabled;
+
+      // Останавливаем старый трек
+      videoTracks.forEach((track) => {
+        track.stop();
+      });
+
+      // Получаем новый поток с другой камерой
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: false, // Аудио не меняем
+        video: {
+          ...currentProfile.constraints,
+          facingMode: newFacingMode,
+        },
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      
+      // Заменяем трек в локальном потоке
+      stream.removeTrack(videoTracks[0]);
+      stream.addTrack(newVideoTrack);
+      
+      // Останавливаем временный поток (трек уже добавлен)
+      newStream.getAudioTracks().forEach((t) => t.stop());
+
+      // Применяем предыдущее состояние (включена/выключена)
+      newVideoTrack.enabled = wasEnabled;
+
+      // Обновляем все peer connections с новым треком
+      const pcs = Object.values(peerConnectionsRef.current);
+      for (const pc of pcs) {
+        const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+        if (sender) {
+          await sender.replaceTrack(newVideoTrack);
+          console.log('Video track replaced in peer connection');
+        }
+      }
+
+      // Обновляем видео элемент
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+      }
+
+      console.log(`Камера переключена на: ${newFacingMode}`);
+    } catch (error) {
+      console.error('Ошибка переключения камеры:', error);
+      // Возвращаемся к предыдущему состоянию при ошибке
+      facingModeRef.current = facingModeRef.current === 'user' ? 'environment' : 'user';
+    } finally {
+      setIsTogglingVideo(false);
+    }
+  }, [isTogglingVideo, videoProfile]);
+
+  /**
    * Выход из встречи
    */
   const leaveMeeting = useCallback(() => {
@@ -1121,13 +1252,34 @@ function VideoCall({
           Исходящее: {net.outKbps ?? '—'} kbps
         </div>
         <div className="network-indicator__row">
-          Профиль: {videoProfile.toUpperCase()}
+          <div className="quality-selector">
+            <label className="quality-selector__label">Качество:</label>
+            <select 
+              className="quality-selector__select"
+              value={qualityMode === 'auto' ? 'auto' : videoProfile}
+              onChange={(e) => {
+                const value = e.target.value;
+                if (value === 'auto') {
+                  setQualityMode('auto');
+                } else {
+                  setQualityMode('manual');
+                  setProfile(value);
+                }
+              }}
+            >
+              <option value="auto">Auto</option>
+              <option value="low">Low</option>
+              <option value="med">Medium</option>
+              <option value="hd">HD</option>
+              <option value="fullhd">FullHD</option>
+            </select>
+          </div>
         </div>
       </div>
       <div className="video-grid">
         {/* Локальное видео */}
         <div className="video-item">
-          {/* <video ref={localVideoRef} autoPlay muted playsInline className="local-video-mirror" /> */}
+          <video ref={localVideoRef} autoPlay muted playsInline className="local-video-mirror" style={{ transform: 'scaleX(-1)' }} />
           <div className="user-name-overlay">{userName || 'Вы'}</div>
           <div className="media-badges">
             <span className={`badge ${isAudioMuted ? 'muted' : ''}`}>
@@ -1158,6 +1310,14 @@ function VideoCall({
               title={isVideoMuted ? 'Включить камеру' : 'Выключить камеру'}
             >
               <i className={`fas ${isVideoMuted ? 'fa-video-slash' : 'fa-video'}`} />
+            </button>
+            <button 
+              onClick={switchCamera} 
+              disabled={isTogglingVideo || isVideoMuted}
+              className="switch-camera-btn"
+              title="Переключить камеру"
+            >
+              <i className="fas fa-sync-alt" />
             </button>
           </div>
         </div>

@@ -29,6 +29,48 @@
   line-height: 1.4;
 }
 
+.quality-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.quality-selector__label {
+  font-size: 11px;
+  color: rgba(232, 236, 245, 0.8);
+  white-space: nowrap;
+}
+
+.quality-selector__select {
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e8ecf5;
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s ease;
+  flex: 1;
+  min-width: 80px;
+}
+
+.quality-selector__select:hover {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.quality-selector__select:focus {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(90, 141, 238, 0.6);
+}
+
+.quality-selector__select option {
+  background: #1a1d29;
+  color: #e8ecf5;
+}
+
 /* Лёгкое цветовое различие по уровню */
 .network-indicator--ok {
   border-color: rgba(56, 189, 248, 0.6);
@@ -63,6 +105,11 @@ video {
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* Зеркальное отображение для локального видео */
+.video-item video.local-video-mirror {
+  transform: scaleX(-1) !important;
 }
 
 .controls {
@@ -114,6 +161,18 @@ video {
 
 .controls button.muted-btn:hover:not(:disabled) {
   background-color: rgba(220, 60, 60, 0.9);
+}
+
+.controls button.switch-camera-btn {
+  background-color: rgba(0, 0, 0, 0.7);
+}
+
+.controls button.switch-camera-btn:hover:not(:disabled) {
+  background-color: rgba(0, 0, 0, 0.9);
+}
+
+.controls button.switch-camera-btn:disabled {
+  opacity: 0.3;
 }
 
 .video-muted-overlay {
